@@ -12,7 +12,6 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    environment: Docker
     env:
       SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
       SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
