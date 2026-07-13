@@ -22,18 +22,27 @@ try:
 except ImportError:      # running from source without the dependency
     send2trash = None
 
-try:
-    import sv_ttk
-except ImportError:      # theme is optional; the app still works unthemed
-    sv_ttk = None
-
 CHECKED, UNCHECKED = "☑", "☐"
 
+# Fluent-inspired palettes applied to the native 'clam' theme. Everything is
+# drawn by Tk primitives (no image sprites), so resizing stays fast.
 THEME_COLORS = {
-    "dark": {"ok": "#5ecb63", "err": "#ff7069", "info": "#67b7ff",
-             "muted": "#9a9a9a", "field_bg": "#2a2a2a", "fg": "#fafafa"},
-    "light": {"ok": "#2e7d32", "err": "#b71c1c", "info": "#1565c0",
-              "muted": "#666666", "field_bg": "#ffffff", "fg": "#1c1c1c"},
+    "dark": {
+        "bg": "#1f1f1f", "surface": "#2b2b2b", "field_bg": "#2a2a2a",
+        "border": "#3d3d3d", "hover": "#383838",
+        "fg": "#f0f0f0", "muted": "#9a9a9a",
+        "accent": "#0f6fc5", "accent_hover": "#1d80d8", "accent_press": "#0a5ba3",
+        "ok": "#5ecb63", "err": "#ff7069", "info": "#67b7ff",
+        "odd": "#252525", "titlebar": "#1f1f1f",
+    },
+    "light": {
+        "bg": "#f3f3f3", "surface": "#ffffff", "field_bg": "#ffffff",
+        "border": "#d5d5d5", "hover": "#e9e9e9",
+        "fg": "#1c1c1c", "muted": "#666666",
+        "accent": "#0067c0", "accent_hover": "#1975c5", "accent_press": "#00539b",
+        "ok": "#2e7d32", "err": "#b71c1c", "info": "#1565c0",
+        "odd": "#fafafa", "titlebar": "#f3f3f3",
+    },
 }
 
 POLL_MS = 100
@@ -120,22 +129,89 @@ class App:
     # ----------------------------------------------------------------- theme --
     def _apply_theme(self, theme: str) -> None:
         theme = theme if theme in THEME_COLORS else "dark"
-        self.colors = THEME_COLORS[theme]
-        if sv_ttk is not None:
-            sv_ttk.set_theme(theme)
+        self.colors = c = THEME_COLORS[theme]
         style = ttk.Style()
-        style.configure("Muted.TLabel", foreground=self.colors["muted"])
-        odd_bg = "#242424" if theme == "dark" else "#f3f3f3"
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        self.root.configure(bg=c["bg"])
+        style.configure(
+            ".", background=c["bg"], foreground=c["fg"],
+            bordercolor=c["border"], darkcolor=c["bg"], lightcolor=c["bg"],
+            troughcolor=c["surface"], fieldbackground=c["field_bg"],
+            focuscolor=c["accent"], selectbackground=c["accent"],
+            selectforeground="#ffffff", insertcolor=c["fg"])
+        style.configure("TLabel", background=c["bg"], foreground=c["fg"])
+        style.configure("Muted.TLabel", foreground=c["muted"])
+        style.configure("TFrame", background=c["bg"])
+        style.configure("TLabelframe", background=c["bg"], bordercolor=c["border"],
+                        relief="solid", borderwidth=1)
+        style.configure("TLabelframe.Label", background=c["bg"], foreground=c["muted"])
+        style.configure("TNotebook", background=c["bg"], borderwidth=0,
+                        tabmargins=(8, 6, 8, 0))
+        style.configure("TNotebook.Tab", padding=(14, 7), background=c["bg"],
+                        borderwidth=0)
+        style.map("TNotebook.Tab",
+                  background=[("selected", c["surface"]), ("active", c["hover"])],
+                  foreground=[("selected", c["fg"]), ("!selected", c["muted"])])
+        style.configure("TButton", background=c["surface"], foreground=c["fg"],
+                        borderwidth=1, relief="flat", padding=(10, 5))
+        style.map("TButton",
+                  background=[("disabled", c["bg"]), ("pressed", c["border"]),
+                              ("active", c["hover"])],
+                  foreground=[("disabled", c["muted"])])
+        style.configure("Accent.TButton", background=c["accent"],
+                        foreground="#ffffff", bordercolor=c["accent"])
+        style.map("Accent.TButton",
+                  background=[("disabled", c["surface"]),
+                              ("pressed", c["accent_press"]),
+                              ("active", c["accent_hover"])],
+                  foreground=[("disabled", c["muted"])])
+        style.configure("Treeview", background=c["field_bg"],
+                        fieldbackground=c["field_bg"], foreground=c["fg"],
+                        rowheight=26, borderwidth=0)
+        style.map("Treeview", background=[("selected", c["accent"])],
+                  foreground=[("selected", "#ffffff")])
+        style.configure("Treeview.Heading", background=c["surface"],
+                        foreground=c["fg"], relief="flat", padding=(6, 4))
+        style.map("Treeview.Heading", background=[("active", c["hover"])])
+        for widget in ("TEntry", "TCombobox", "TSpinbox"):
+            style.configure(widget, fieldbackground=c["field_bg"],
+                            foreground=c["fg"], insertcolor=c["fg"],
+                            bordercolor=c["border"], padding=4,
+                            arrowcolor=c["fg"], background=c["surface"])
+            style.map(widget,
+                      fieldbackground=[("readonly", c["field_bg"]),
+                                       ("disabled", c["bg"])],
+                      foreground=[("disabled", c["muted"])])
+        for widget in ("TCheckbutton", "TRadiobutton"):
+            style.configure(widget, background=c["bg"], foreground=c["fg"],
+                            indicatorbackground=c["field_bg"],
+                            indicatorforeground=c["accent"])
+            style.map(widget, background=[("active", c["bg"])])
+        style.configure("Horizontal.TProgressbar", background=c["accent"],
+                        troughcolor=c["surface"], borderwidth=0, thickness=10)
+        for widget in ("Vertical.TScrollbar", "Horizontal.TScrollbar"):
+            style.configure(widget, background=c["surface"], troughcolor=c["bg"],
+                            bordercolor=c["bg"], arrowcolor=c["muted"], relief="flat")
+            style.map(widget, background=[("active", c["border"])])
+        style.configure("TSeparator", background=c["border"])
+        # popup list of comboboxes (plain tk widgets, not ttk)
+        self.root.option_add("*TCombobox*Listbox*Background", c["field_bg"])
+        self.root.option_add("*TCombobox*Listbox*Foreground", c["fg"])
+        self.root.option_add("*TCombobox*Listbox*selectBackground", c["accent"])
+        self.root.option_add("*TCombobox*Listbox*selectForeground", "#ffffff")
+
         for tree in (self.video_tree, self.queue_tree, self.playlist_tree):
-            tree.tag_configure("uploaded", foreground=self.colors["ok"])
-            tree.tag_configure("done", foreground=self.colors["ok"])
-            tree.tag_configure("problem", foreground=self.colors["err"])
-            tree.tag_configure("error", foreground=self.colors["err"])
-            tree.tag_configure("uploading", foreground=self.colors["info"])
-            tree.tag_configure("odd_row", background=odd_bg)
+            tree.tag_configure("uploaded", foreground=c["ok"])
+            tree.tag_configure("done", foreground=c["ok"])
+            tree.tag_configure("problem", foreground=c["err"])
+            tree.tag_configure("error", foreground=c["err"])
+            tree.tag_configure("uploading", foreground=c["info"])
+            tree.tag_configure("odd_row", background=c["odd"])
         for txt in (self.desc_text, self.log_text, self.auto_log_text):
-            txt.configure(bg=self.colors["field_bg"], fg=self.colors["fg"],
-                          insertbackground=self.colors["fg"],
+            txt.configure(bg=c["field_bg"], fg=c["fg"], insertbackground=c["fg"],
                           relief="flat", highlightthickness=0)
         self._set_titlebar_dark(theme == "dark")
         self._update_title_count()
@@ -146,10 +222,8 @@ class App:
         try:
             # Preferred: exact caption color matching the theme (Windows 11)
             import pywinstyles
-            pywinstyles.change_header_color(
-                self.root, "#1c1c1c" if dark else "#fafafa")
-            pywinstyles.change_title_color(
-                self.root, "#fafafa" if dark else "#1c1c1c")
+            pywinstyles.change_header_color(self.root, self.colors["titlebar"])
+            pywinstyles.change_title_color(self.root, self.colors["fg"])
         except Exception:
             try:
                 from ctypes import byref, c_int, windll
@@ -578,12 +652,6 @@ class App:
         self.kids_var = tk.BooleanVar(value=bool(self.cfg.get("made_for_kids", False)))
         ttk.Checkbutton(row, text="Mark as “made for kids”",
                         variable=self.kids_var).pack(side="left", padx=14)
-        ttk.Label(row, text="Upload chunk size (MB):").pack(side="left", padx=(14, 0))
-        self.chunk_var = tk.StringVar(value=str(self.cfg.get("chunk_mb", 64)))
-        ttk.Entry(row, textvariable=self.chunk_var, width=5).pack(side="left", padx=4)
-        ttk.Label(row, text="(64–256 recommended on fast connections; each chunk "
-                            "is one request, so bigger = faster)",
-                  style="Muted.TLabel").pack(side="left")
 
         ttk.Button(tab, text="Save settings", command=self.save_settings
                    ).pack(anchor="e", padx=10)
@@ -1216,13 +1284,7 @@ class App:
                 "Upload", "Not signed in to YouTube.\nGo to Settings → Sign in with Google.")
             self.notebook.select(4)
             return
-        # reset stuck error items? leave them; only 'queued' get uploaded
-        try:
-            chunk_mb = max(1, min(1024, int(self.chunk_var.get())))
-        except ValueError:
-            chunk_mb = 64
-        self.worker = UploadWorker(self.credentials, self.queue_items,
-                                   self.events, chunk_mb=chunk_mb)
+        self.worker = UploadWorker(self.credentials, self.queue_items, self.events)
         self.worker.start()
         self.start_btn.configure(state="disabled")
         self.pause_btn.configure(state="normal")
@@ -1473,10 +1535,6 @@ class App:
         self.cfg["made_for_kids"] = bool(self.kids_var.get())
         self.cfg["after_upload"] = config.AFTER_UPLOAD_CHOICES.get(
             self.after_upload_var.get(), "keep")
-        try:
-            self.cfg["chunk_mb"] = max(1, int(self.chunk_var.get()))
-        except ValueError:
-            pass
         config.save_config(self.cfg)
         if not silent:
             self._log("Settings saved.")

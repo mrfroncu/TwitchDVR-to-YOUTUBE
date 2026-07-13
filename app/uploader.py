@@ -1,30 +1,33 @@
 """Sequential YouTube upload worker.
 
-Runs in a background thread, uploading queue items one at a time with
-resumable chunked uploads. Talks to the GUI exclusively through an event
-queue of dicts:
+Runs in a background thread, uploading queue items one at a time. Talks to
+the GUI exclusively through an event queue of dicts:
 
     {"type": "item_status", "key", "status", "detail"}   queued/uploading/done/error/cancelled
     {"type": "progress", "key", "pct", "speed_bps", "eta_s"}
     {"type": "log", "text"}
     {"type": "worker_done", "reason"}                     finished/paused/quota
+
+Uploads speak Google's resumable-upload protocol directly with `requests`
+(one streaming PUT for the whole file, resumed from the committed offset on
+connection loss). googleapiclient's chunked next_chunk() loop is avoided on
+purpose: it caps out around 10 MB/s in practice (see
+github.com/googleapis/google-api-python-client issues #625 / #793), while a
+single streamed request — what browsers do — saturates fast connections.
 """
 from __future__ import annotations
 
-import json
 import random
 import threading
 import time
 from dataclasses import dataclass, field
 
-import httplib2
-from googleapiclient.errors import HttpError, ResumableUploadError
-from googleapiclient.http import MediaFileUpload
+from google.auth.transport.requests import AuthorizedSession
 
 from .scanner import Vod
 
+UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
 RETRIABLE_STATUS = {429, 500, 502, 503, 504}
-RETRIABLE_EXCEPTIONS = (httplib2.HttpLib2Error, OSError, ConnectionError, TimeoutError)
 MAX_RETRIES = 10
 QUOTA_REASONS = {"quotaExceeded", "dailyLimitExceeded", "uploadLimitExceeded",
                  "rateLimitExceeded", "userRateLimitExceeded"}
@@ -61,6 +64,48 @@ class UploadCancelled(Exception):
     pass
 
 
+class UploadHttpError(Exception):
+    """Non-retriable HTTP error from the upload endpoint."""
+
+    def __init__(self, status_code: int, text: str):
+        super().__init__(f"HTTP {status_code}: {text[:300]}")
+        self.status_code = status_code
+        self.text = text
+
+
+class _ProgressReader:
+    """File-like view of a byte range with throttled progress + cancel.
+
+    `len` is what requests uses for the Content-Length header.
+    """
+
+    def __init__(self, fh, start: int, end: int, callback, cancel_event):
+        self._fh = fh
+        self._pos = start
+        self._end = end
+        self._callback = callback
+        self._cancel = cancel_event
+        self._last_report = 0.0
+        self.len = end - start
+        fh.seek(start)
+
+    def read(self, n: int = -1) -> bytes:
+        if self._cancel.is_set():
+            raise UploadCancelled()
+        remaining = self._end - self._pos
+        if remaining <= 0:
+            return b""
+        if n is None or n < 0 or n > remaining:
+            n = remaining
+        data = self._fh.read(n)
+        self._pos += len(data)
+        now = time.monotonic()
+        if now - self._last_report >= 0.5 or self._pos >= self._end:
+            self._last_report = now
+            self._callback(self._pos)
+        return data
+
+
 def verify_video(service, video_id: str) -> tuple[bool, str]:
     """Check on YouTube that an uploaded video exists and is not failed/rejected.
 
@@ -85,27 +130,13 @@ def verify_video(service, video_id: str) -> tuple[bool, str]:
     return False, detail
 
 
-def _http_error_reasons(err: HttpError) -> set[str]:
-    reasons: set[str] = set()
-    try:
-        payload = json.loads(err.content.decode("utf-8"))
-        for detail in payload.get("error", {}).get("errors", []):
-            if detail.get("reason"):
-                reasons.add(detail["reason"])
-    except (ValueError, AttributeError, UnicodeDecodeError):
-        pass
-    return reasons
-
-
 class UploadWorker(threading.Thread):
-    def __init__(self, credentials, items: list[QueueItem], events, chunk_mb: int = 64):
+    def __init__(self, credentials, items: list[QueueItem], events):
         super().__init__(daemon=True, name="upload-worker")
         self._credentials = credentials
         self._items = items
         self._events = events
-        self._chunk_bytes = max(1, min(1024, int(chunk_mb))) * 1024 * 1024
-        # round to the 256 KiB multiple the API requires
-        self._chunk_bytes -= self._chunk_bytes % (256 * 1024)
+        self._session: AuthorizedSession | None = None
         self.pause_requested = threading.Event()   # finish current item, then stop
         self.cancel_current = threading.Event()    # abort the in-flight item
         self._playlists_cache: list[dict] | None = None
@@ -116,6 +147,7 @@ class UploadWorker(threading.Thread):
         reason = "finished"
         try:
             service = build_service(self._credentials)
+            self._session = AuthorizedSession(self._credentials)
         except Exception as exc:
             self._emit({"type": "log", "text": f"Could not build YouTube client: {exc}"})
             self._emit({"type": "worker_done", "reason": "error"})
@@ -196,68 +228,125 @@ class UploadWorker(threading.Thread):
             parts += ",recordingDetails"
 
         try:
-            return self._run_resumable(service, item, body, parts)
-        except HttpError as err:
+            return self._run_resumable(item, body, parts)
+        except UploadHttpError as err:
             # Some accounts reject recordingDetails; retry without it once.
-            if err.resp.status == 400 and "recordingDetails" in parts and \
-                    "recording" in str(err).lower():
+            if err.status_code == 400 and "recordingDetails" in parts and \
+                    "recording" in err.text.lower():
                 body.pop("recordingDetails", None)
                 self._emit({"type": "log",
                             "text": "recordingDate rejected by API, retrying without it"})
-                return self._run_resumable(service, item, body, "snippet,status")
+                return self._run_resumable(item, body, "snippet,status")
             raise
 
-    def _run_resumable(self, service, item: QueueItem, body: dict, parts: str) -> str:
-        vod = item.vod
-        media = MediaFileUpload(str(vod.video_path), chunksize=self._chunk_bytes,
-                                resumable=True)
-        request = service.videos().insert(
-            part=parts,
-            body=body,
-            media_body=media,
-            notifySubscribers=item.notify_subscribers,
-        )
+    def _raise_for_response(self, resp) -> None:
+        reasons: set[str] = set()
+        try:
+            for detail in resp.json().get("error", {}).get("errors", []):
+                if detail.get("reason"):
+                    reasons.add(detail["reason"])
+        except ValueError:
+            pass
+        if resp.status_code == 403 and reasons & QUOTA_REASONS:
+            raise QuotaExceeded(", ".join(sorted(reasons)) or "403")
+        raise UploadHttpError(resp.status_code, resp.text or "")
 
-        total = vod.size_bytes or vod.video_path.stat().st_size
-        start_time = time.monotonic()
-        response = None
+    def _committed_offset(self, session_uri: str, total: int):
+        """Ask the upload session how many bytes it has. Returns
+        (offset, final_response_or_None) — a final response means the upload
+        actually completed before the connection dropped."""
+        resp = self._session.put(
+            session_uri, headers={"Content-Range": f"bytes */{total}"},
+            timeout=(30, 60))
+        if resp.status_code in (200, 201):
+            return total, resp
+        if resp.status_code == 308:
+            rng = resp.headers.get("Range", "")
+            if "-" in rng:
+                try:
+                    return int(rng.rsplit("-", 1)[-1]) + 1, None
+                except ValueError:
+                    pass
+            return 0, None
+        self._raise_for_response(resp)
+
+    def _run_resumable(self, item: QueueItem, body: dict, parts: str) -> str:
+        """One streaming PUT for the whole file on a resumable session,
+        resumed from the server's committed offset after connection loss."""
+        vod = item.vod
+        total = vod.video_path.stat().st_size
+        params = {
+            "uploadType": "resumable",
+            "part": parts,
+            "notifySubscribers": "true" if item.notify_subscribers else "false",
+        }
+        resp = self._session.post(
+            UPLOAD_URL, params=params, json=body,
+            headers={"X-Upload-Content-Length": str(total),
+                     "X-Upload-Content-Type": "video/*"},
+            timeout=(30, 60))
+        if resp.status_code != 200:
+            self._raise_for_response(resp)
+        session_uri = resp.headers["Location"]
+
+        def finish(resp) -> str:
+            video_id = resp.json().get("id")
+            if not video_id:
+                raise RuntimeError(f"unexpected API response: {resp.text[:300]}")
+            self._emit({"type": "progress", "key": item.key, "pct": 100.0,
+                        "speed_bps": 0, "eta_s": 0})
+            return video_id
+
+        offset = 0
         retry = 0
-        while response is None:
-            if self.cancel_current.is_set():
-                raise UploadCancelled()
-            try:
-                status, response = request.next_chunk()
-                retry = 0
-                if status:
-                    sent = status.resumable_progress
-                    elapsed = max(0.001, time.monotonic() - start_time)
-                    speed = sent / elapsed
+        with open(vod.video_path, "rb") as fh:
+            while True:
+                if self.cancel_current.is_set():
+                    raise UploadCancelled()
+
+                attempt_start = time.monotonic()
+                attempt_base = offset
+
+                def report(sent: int) -> None:
+                    elapsed = max(0.001, time.monotonic() - attempt_start)
+                    speed = (sent - attempt_base) / elapsed
                     eta = (total - sent) / speed if speed > 0 else 0
                     self._emit({"type": "progress", "key": item.key,
                                 "pct": sent / total * 100 if total else 0,
                                 "speed_bps": speed, "eta_s": eta})
-            except HttpError as err:
-                reasons = _http_error_reasons(err)
-                if err.resp.status == 403 and reasons & QUOTA_REASONS:
-                    raise QuotaExceeded(", ".join(sorted(reasons)) or "403") from err
-                if err.resp.status in RETRIABLE_STATUS:
-                    retry = self._backoff(retry, f"HTTP {err.resp.status}")
-                else:
-                    raise
-            except ResumableUploadError as err:
-                reasons = _http_error_reasons(err)
-                if reasons & QUOTA_REASONS:
-                    raise QuotaExceeded(", ".join(sorted(reasons))) from err
-                raise
-            except RETRIABLE_EXCEPTIONS as err:
-                retry = self._backoff(retry, repr(err))
 
-        video_id = response.get("id")
-        if not video_id:
-            raise RuntimeError(f"unexpected API response: {response}")
-        self._emit({"type": "progress", "key": item.key, "pct": 100.0,
-                    "speed_bps": 0, "eta_s": 0})
-        return video_id
+                reader = _ProgressReader(fh, offset, total, report,
+                                         self.cancel_current)
+                try:
+                    resp = self._session.put(
+                        session_uri, data=reader,
+                        headers={"Content-Range":
+                                 f"bytes {offset}-{total - 1}/{total}",
+                                 "Content-Type": "video/*"},
+                        timeout=(30, 120))
+                except UploadCancelled:
+                    raise
+                except Exception as exc:
+                    retry = self._backoff(retry, repr(exc))
+                    offset, final = self._committed_offset(session_uri, total)
+                    if final is not None:
+                        return finish(final)
+                    continue
+
+                if resp.status_code in (200, 201):
+                    return finish(resp)
+                if resp.status_code == 308:
+                    offset, final = self._committed_offset(session_uri, total)
+                    if final is not None:
+                        return finish(final)
+                    continue
+                if resp.status_code in RETRIABLE_STATUS:
+                    retry = self._backoff(retry, f"HTTP {resp.status_code}")
+                    offset, final = self._committed_offset(session_uri, total)
+                    if final is not None:
+                        return finish(final)
+                    continue
+                self._raise_for_response(resp)
 
     def _backoff(self, retry: int, why: str) -> int:
         retry += 1

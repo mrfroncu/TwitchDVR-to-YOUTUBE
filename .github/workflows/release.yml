@@ -54,18 +54,7 @@ jobs:
           if-no-files-found: error
 
   build-macos:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-latest
-            arch: arm64
-            experimental: false
-          - runner: macos-15-intel
-            arch: intel
-            experimental: true
-    runs-on: ${{ matrix.runner }}
-    continue-on-error: ${{ matrix.experimental }}
+    runs-on: macos-latest   # Apple Silicon only; Intel builds were dropped
     steps:
       - uses: actions/checkout@v4
 
@@ -94,11 +83,11 @@ jobs:
           ln -s /Applications dmg-staging/Applications
           hdiutil create -volname "TwitchDVR-to-YouTube" \
             -srcfolder dmg-staging -ov -format UDZO \
-            "TwitchDVR-to-YouTube-macos-${{ matrix.arch }}.dmg"
+            "TwitchDVR-to-YouTube-macos-arm64.dmg"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: macos-dmg-${{ matrix.arch }}
+          name: macos-dmg-arm64
           path: TwitchDVR-to-YouTube-macos-*.dmg
           if-no-files-found: error
 
