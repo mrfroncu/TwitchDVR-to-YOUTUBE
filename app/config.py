@@ -37,6 +37,7 @@ DEFAULTS = {
     "made_for_kids": False,
     "chunk_mb": 64,
     "after_upload": "keep",         # keep | trash_video | trash_folder
+    "theme": "dark",                # dark | light
 }
 
 AFTER_UPLOAD_CHOICES = {

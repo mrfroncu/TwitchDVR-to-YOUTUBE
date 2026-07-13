@@ -3,3 +3,4 @@ google-auth>=2.23.0
 google-auth-oauthlib>=1.1.0
 google-auth-httplib2>=0.1.1
 Send2Trash>=1.8.2
+sv-ttk>=2.6.0
