@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from . import auth, config, limits, playlists, scanner
+from . import auth, config, limits, playlists, scanner, updater, ytmanager
 from .scanner import Vod
 from .uploader import QueueItem, UploadWorker, verify_video
 from .version import __version__
@@ -110,6 +110,7 @@ class App:
         self._build_queue_tab()
         self._build_automation_tab()
         self._build_playlists_tab()
+        self._build_manager_tab()
         self._build_settings_tab()
         self._build_status_bar()
         self._apply_theme(self.cfg.get("theme", "dark"))
@@ -118,10 +119,14 @@ class App:
         root.after(POLL_MS, self._poll_events)
         root.after(1000, self._auto_tick)
 
-        # Try silent sign-in with the saved token
-        if config.TOKEN_PATH.exists():
+        # Restore saved account(s) and check for updates in the background
+        auth.migrate_legacy_token()
+        self.accounts: list[dict] = auth.list_accounts()
+        self._populate_account_combos()
+        if self.accounts:
             self._log("Restoring saved YouTube session…")
             threading.Thread(target=self._restore_session, daemon=True).start()
+        threading.Thread(target=self._update_check_bg, daemon=True).start()
         if self.cfg.get("vod_folder") and Path(self.cfg["vod_folder"]).is_dir():
             self.folder_var.set(self.cfg["vod_folder"])
             self.root.after(200, self.scan_folder)
@@ -149,12 +154,15 @@ class App:
                         relief="solid", borderwidth=1)
         style.configure("TLabelframe.Label", background=c["bg"], foreground=c["muted"])
         style.configure("TNotebook", background=c["bg"], borderwidth=0,
-                        tabmargins=(8, 6, 8, 0))
-        style.configure("TNotebook.Tab", padding=(14, 7), background=c["bg"],
+                        tabmargins=(10, 8, 10, 6))
+        style.configure("TNotebook.Tab", padding=(16, 8), background=c["bg"],
                         borderwidth=0)
+        # equal-size tabs; selection is marked purely by the accent color
         style.map("TNotebook.Tab",
-                  background=[("selected", c["surface"]), ("active", c["hover"])],
-                  foreground=[("selected", c["fg"]), ("!selected", c["muted"])])
+                  background=[("selected", c["accent"]), ("active", c["hover"])],
+                  foreground=[("selected", "#ffffff"), ("!selected", c["muted"])],
+                  expand=[("selected", (0, 0, 0, 0))],
+                  padding=[("selected", (16, 8))])
         style.configure("TButton", background=c["surface"], foreground=c["fg"],
                         borderwidth=1, relief="flat", padding=(10, 5))
         style.map("TButton",
@@ -203,7 +211,8 @@ class App:
         self.root.option_add("*TCombobox*Listbox*selectBackground", c["accent"])
         self.root.option_add("*TCombobox*Listbox*selectForeground", "#ffffff")
 
-        for tree in (self.video_tree, self.queue_tree, self.playlist_tree):
+        for tree in (self.video_tree, self.queue_tree, self.playlist_tree,
+                     self.yt_tree):
             tree.tag_configure("uploaded", foreground=c["ok"])
             tree.tag_configure("done", foreground=c["ok"])
             tree.tag_configure("problem", foreground=c["err"])
@@ -582,6 +591,188 @@ class App:
         self.auto_log_text.configure(state="disabled")
         self._log(text)
 
+    # ----------------------------------------------------------- manager tab --
+    def _build_manager_tab(self) -> None:
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text=" 📺 My YouTube ")
+
+        top = ttk.Frame(tab)
+        top.pack(fill="x", padx=8, pady=8)
+        ttk.Label(top, text="Channel:").pack(side="left")
+        self.mgr_account_var = tk.StringVar()
+        self.mgr_account_combo = ttk.Combobox(top, textvariable=self.mgr_account_var,
+                                              width=32, state="readonly", values=[])
+        self.mgr_account_combo.pack(side="left", padx=6)
+        self.mgr_account_combo.bind("<<ComboboxSelected>>", self._on_account_selected)
+        ttk.Button(top, text="⟳ Load videos", style="Accent.TButton",
+                   command=self.load_yt_videos).pack(side="left", padx=6)
+        self.mgr_count_label = ttk.Label(top, text="", style="Muted.TLabel")
+        self.mgr_count_label.pack(side="left", padx=8)
+
+        cols = ("check", "date", "title", "duration", "privacy", "views", "vstatus")
+        self.yt_tree = ttk.Treeview(tab, columns=cols, show="headings",
+                                    selectmode="extended", height=16)
+        headings = {"check": (UNCHECKED, 36), "date": ("Published", 90),
+                    "title": ("Title", 460), "duration": ("Length", 80),
+                    "privacy": ("Privacy", 80), "views": ("Views", 80),
+                    "vstatus": ("Status", 90)}
+        for col, (text, width) in headings.items():
+            self.yt_tree.heading(col, text=text)
+            self.yt_tree.column(col, width=width,
+                                anchor="center" if col not in ("title",) else "w")
+        self.yt_tree.heading("check", command=self._toggle_all_yt)
+        self.yt_checked: set[str] = set()
+        self.yt_videos: list[dict] = []
+        ysb = ttk.Scrollbar(tab, orient="vertical", command=self.yt_tree.yview)
+        self.yt_tree.configure(yscrollcommand=ysb.set)
+        self.yt_tree.pack(fill="both", expand=True, padx=(8, 0))
+        ysb.place(in_=self.yt_tree, relx=1.0, rely=0, relheight=1.0, anchor="ne")
+        self.yt_tree.bind("<Button-1>", self._on_yt_tree_click)
+        self.yt_tree.bind("<Double-1>", lambda _e: self.yt_open_selected())
+
+        act = ttk.LabelFrame(tab, text="Actions (apply to checked videos)")
+        act.pack(fill="x", padx=8, pady=8)
+        row = ttk.Frame(act)
+        row.pack(fill="x", padx=6, pady=6)
+        ttk.Button(row, text="Check all", width=9,
+                   command=lambda: self._set_all_yt_checked(True)).pack(side="left")
+        ttk.Button(row, text="None", width=6,
+                   command=lambda: self._set_all_yt_checked(False)).pack(
+            side="left", padx=(4, 10))
+        ttk.Label(row, text="Playlist:").pack(side="left")
+        self.mgr_playlist_var = tk.StringVar()
+        self.mgr_playlist_combo = ttk.Combobox(row, textvariable=self.mgr_playlist_var,
+                                               width=24, state="readonly", values=[])
+        self.mgr_playlist_combo.pack(side="left", padx=4)
+        ttk.Button(row, text="Add to playlist", style="Accent.TButton",
+                   command=self.yt_add_to_playlist).pack(side="left", padx=(0, 12))
+        ttk.Label(row, text="Privacy:").pack(side="left")
+        self.mgr_privacy_var = tk.StringVar(value="unlisted")
+        ttk.Combobox(row, textvariable=self.mgr_privacy_var, width=9,
+                     state="readonly", values=("private", "unlisted", "public")
+                     ).pack(side="left", padx=4)
+        ttk.Button(row, text="Set privacy",
+                   command=self.yt_set_privacy).pack(side="left", padx=(0, 12))
+        ttk.Button(row, text="Open in browser",
+                   command=self.yt_open_selected).pack(side="left")
+        ttk.Button(row, text="🗑 Delete from YouTube",
+                   command=self.yt_delete).pack(side="right")
+
+    def _on_yt_tree_click(self, event):
+        if self.yt_tree.identify("region", event.x, event.y) == "cell" and \
+                self.yt_tree.identify_column(event.x) == "#1":
+            vid = self.yt_tree.identify_row(event.y)
+            if vid:
+                self.yt_checked.symmetric_difference_update({vid})
+                self.yt_tree.set(vid, "check",
+                                 CHECKED if vid in self.yt_checked else UNCHECKED)
+            return "break"
+        return None
+
+    def _set_all_yt_checked(self, checked: bool) -> None:
+        self.yt_checked = {v["id"] for v in self.yt_videos} if checked else set()
+        for vid in self.yt_tree.get_children():
+            self.yt_tree.set(vid, "check", CHECKED if checked else UNCHECKED)
+
+    def _toggle_all_yt(self) -> None:
+        self._set_all_yt_checked(len(self.yt_checked) < len(self.yt_videos))
+
+    def _yt_checked_ids(self) -> list[str]:
+        return [v for v in self.yt_tree.get_children() if v in self.yt_checked]
+
+    def load_yt_videos(self) -> None:
+        if self.credentials is None:
+            messagebox.showwarning("My YouTube", "Not signed in — add an account "
+                                   "in Settings first.")
+            return
+        creds = self.credentials
+        self.mgr_count_label.configure(text="loading…")
+
+        def worker():
+            try:
+                service = auth.build_service(creds)
+                items = ytmanager.list_channel_videos(service)
+                self.events.put({"type": "yt_videos", "items": items})
+            except Exception as exc:
+                self.events.put({"type": "log",
+                                 "text": "Could not load channel videos: "
+                                         + auth.describe_api_error(exc)})
+                self.events.put({"type": "yt_videos", "items": None})
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _yt_action(self, ids: list[str], fn, done_text: str,
+                   reload_after: bool = False) -> None:
+        """Run fn(service, video_id) over ids in a worker thread."""
+        creds = self.credentials
+        if creds is None:
+            messagebox.showwarning("My YouTube", "Not signed in.")
+            return
+
+        def worker():
+            try:
+                service = auth.build_service(creds)
+            except Exception as exc:
+                self.events.put({"type": "log", "text": f"Action failed: {exc}"})
+                return
+            ok = 0
+            for vid in ids:
+                try:
+                    fn(service, vid)
+                    ok += 1
+                except Exception as exc:
+                    self.events.put({"type": "log",
+                                     "text": f"{vid}: "
+                                             + auth.describe_api_error(exc)})
+            self.events.put({"type": "log", "text": done_text.format(n=ok)})
+            if reload_after and ok:
+                self.events.put({"type": "yt_reload"})
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def yt_add_to_playlist(self) -> None:
+        ids = self._yt_checked_ids()
+        title = self.mgr_playlist_var.get()
+        pid = self.playlist_ids.get(title)
+        if not ids or not pid:
+            messagebox.showinfo("My YouTube", "Check some videos and pick a "
+                                "playlist first (refresh playlists if the list "
+                                "is empty).")
+            return
+        self._yt_action(ids,
+                        lambda s, v: playlists.add_to_playlist(s, pid, v),
+                        f"Added {{n}} video(s) to playlist '{title}'.")
+
+    def yt_set_privacy(self) -> None:
+        ids = self._yt_checked_ids()
+        privacy = self.mgr_privacy_var.get()
+        if not ids:
+            messagebox.showinfo("My YouTube", "Check some videos first.")
+            return
+        self._yt_action(ids,
+                        lambda s, v: ytmanager.set_privacy(s, v, privacy),
+                        f"Set privacy '{privacy}' on {{n}} video(s).",
+                        reload_after=True)
+
+    def yt_open_selected(self) -> None:
+        ids = self._yt_checked_ids() or list(self.yt_tree.selection())
+        import webbrowser
+        for vid in ids[:10]:
+            webbrowser.open(f"https://youtu.be/{vid}")
+
+    def yt_delete(self) -> None:
+        ids = self._yt_checked_ids()
+        if not ids:
+            messagebox.showinfo("My YouTube", "Check some videos first.")
+            return
+        if not messagebox.askyesno(
+                "Delete from YouTube",
+                f"PERMANENTLY delete {len(ids)} video(s) from YouTube?\n\n"
+                "This cannot be undone!", icon="warning"):
+            return
+        self._yt_action(ids, ytmanager.delete_video,
+                        "Deleted {n} video(s) from YouTube.", reload_after=True)
+
     # ---------------------------------------------------------- settings tab --
     def _build_settings_tab(self) -> None:
         tab = ttk.Frame(self.notebook)
@@ -618,17 +809,28 @@ class App:
                   ).pack(side="left")
 
         row = ttk.Frame(acct)
+        row.pack(fill="x", padx=8, pady=2)
+        ttk.Label(row, text="Active channel:").pack(side="left")
+        self.account_var = tk.StringVar()
+        self.account_combo = ttk.Combobox(row, textvariable=self.account_var,
+                                          width=36, state="readonly", values=[])
+        self.account_combo.pack(side="left", padx=6)
+        self.account_combo.bind("<<ComboboxSelected>>", self._on_account_selected)
+
+        row = ttk.Frame(acct)
         row.pack(fill="x", padx=8, pady=(4, 8))
-        self.signin_btn = ttk.Button(row, text="Sign in with Google…",
+        self.signin_btn = ttk.Button(row, text="➕ Add account…",
                                      style="Accent.TButton", command=self.sign_in)
         self.signin_btn.pack(side="left")
-        ttk.Button(row, text="Sign out", command=self.sign_out).pack(side="left", padx=6)
+        ttk.Button(row, text="Remove account", command=self.sign_out
+                   ).pack(side="left", padx=6)
         self.account_label = ttk.Label(row, text="Not signed in.")
         self.account_label.pack(side="left", padx=10)
 
-        hint = ("The browser sign-in page is where you pick the Google account AND the "
-                "YouTube channel (brand accounts are listed there). To connect a different "
-                "channel: Sign out, then Sign in again.")
+        hint = ("Each added account is one YouTube channel (the browser sign-in page is "
+                "where you pick the Google account and the brand channel). You can add "
+                "several channels and switch between them here or in the My YouTube tab; "
+                "uploads go to the active channel.")
         ttk.Label(acct, text=hint, wraplength=900, style="Muted.TLabel"
                   ).pack(anchor="w", padx=8, pady=(0, 8))
 
@@ -686,8 +888,16 @@ class App:
         ttk.Label(row, text="(0 = no limit; stops before YouTube errors)",
                   style="Muted.TLabel").pack(side="left")
 
-        ttk.Button(tab, text="Save settings", command=self.save_settings
-                   ).pack(anchor="e", padx=10)
+        about = ttk.Frame(tab)
+        about.pack(fill="x", padx=10, pady=(2, 0))
+        ttk.Button(about, text="Save settings", command=self.save_settings
+                   ).pack(side="right")
+        ttk.Button(about, text="Check for updates",
+                   command=lambda: threading.Thread(
+                       target=self._update_check_bg, args=(True,),
+                       daemon=True).start()).pack(side="left")
+        ttk.Label(about, text=f"Version {__version__}", style="Muted.TLabel"
+                  ).pack(side="left", padx=10)
 
         notes = (
             "Quota note: every upload costs 1600 API units and Google's default daily quota "
@@ -940,9 +1150,13 @@ class App:
 
     def _update_playlist_choices(self) -> None:
         values = self._playlist_choices()
+        titles = [p["title"] for p in self.playlists]
         self.editor_playlist_combo.configure(values=values)
         self.bulk_playlist_combo.configure(values=values)
-        self.pl_fixed_combo.configure(values=[p["title"] for p in self.playlists])
+        self.pl_fixed_combo.configure(values=titles)
+        self.mgr_playlist_combo.configure(values=titles)
+        if titles and self.mgr_playlist_var.get() not in titles:
+            self.mgr_playlist_var.set(titles[0])
 
     def _resolve_playlist_spec(self, key: str) -> dict | None:
         """What playlist (if any) an enqueued video should end up in."""
@@ -1315,7 +1529,7 @@ class App:
         if self.credentials is None:
             messagebox.showwarning(
                 "Upload", "Not signed in to YouTube.\nGo to Settings → Sign in with Google.")
-            self.notebook.select(4)
+            self.notebook.select(5)
             return
         cooldown = limits.get_cooldown(self.cfg)
         if cooldown is not None:
@@ -1407,23 +1621,93 @@ class App:
         return {"type": "auth_ok", "creds": creds, "channel": channel,
                 "channel_error": channel_error}
 
+    def _active_account_id(self) -> str | None:
+        ids = [a["id"] for a in self.accounts]
+        active = self.cfg.get("active_account")
+        if active in ids:
+            return active
+        return ids[0] if ids else None
+
+    def _populate_account_combos(self) -> None:
+        titles = [a["title"] for a in self.accounts]
+        active = self._active_account_id()
+        current = next((a["title"] for a in self.accounts if a["id"] == active), "")
+        for combo, var in ((getattr(self, "account_combo", None),
+                            getattr(self, "account_var", None)),
+                           (getattr(self, "mgr_account_combo", None),
+                            getattr(self, "mgr_account_var", None))):
+            if combo is not None:
+                combo.configure(values=titles)
+                var.set(current)
+
+    def _on_account_selected(self, event) -> None:
+        title = event.widget.get()
+        account = next((a for a in self.accounts if a["title"] == title), None)
+        if account:
+            self.switch_account(account["id"])
+
+    def switch_account(self, account_id: str) -> None:
+        self.cfg["active_account"] = account_id
+        config.save_config(self.cfg)
+        self.playlists = []
+        self.playlist_ids = {}
+        self._log(f"Switching channel to account {account_id}…")
+
+        def worker():
+            creds = auth.load_account(account_id)
+            if creds is None:
+                self.events.put({"type": "auth_err", "quiet": True,
+                                 "error": "That account's session expired — "
+                                          "add it again via Settings."})
+                return
+            self.events.put(self._channel_lookup_event(creds))
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def _restore_session(self) -> None:
-        creds = auth.load_credentials()
+        account_id = self._active_account_id()
+        if account_id is None:
+            return
+        creds = auth.load_account(account_id)
         if creds is None:
             self.events.put({"type": "auth_err", "quiet": True,
                              "error": "Saved session can't be reused (expired, or the "
-                                      "app needs new permissions such as playlists). "
-                                      "Sign in again via Settings."})
+                                      "app needs new permissions). "
+                                      "Add the account again via Settings."})
             return
         self.events.put(self._channel_lookup_event(creds))
 
     def sign_out(self) -> None:
-        auth.sign_out()
+        account_id = self._active_account_id()
+        if account_id is None:
+            return
+        title = next((a["title"] for a in self.accounts if a["id"] == account_id),
+                     account_id)
+        if not messagebox.askyesno("Remove account",
+                                   f"Remove the saved sign-in for '{title}'?"):
+            return
+        auth.remove_account(account_id)
+        self.accounts = auth.list_accounts()
+        self.cfg["active_account"] = ""
+        config.save_config(self.cfg)
         self.credentials = None
         self.channel = None
+        self._populate_account_combos()
         self.account_label.configure(text="Not signed in.")
         self.status_channel.configure(text="Not signed in")
-        self._log("Signed out.")
+        self._log(f"Removed account '{title}'.")
+        if self.accounts:
+            self.switch_account(self.accounts[0]["id"])
+
+    # -------------------------------------------------------------- updates --
+    def _update_check_bg(self, manual: bool = False) -> None:
+        try:
+            info = updater.check_for_update()
+        except Exception as exc:
+            if manual:
+                self.events.put({"type": "log", "text": f"Update check failed: {exc}"})
+            return
+        self.events.put({"type": "update", "info": info, "manual": manual})
 
     # ---------------------------------------------------------------- events --
     def _poll_events(self) -> None:
@@ -1564,10 +1848,43 @@ class App:
                     + ev["channel_error"])
             else:
                 name = self.channel["title"] if self.channel else "(no channel on this account)"
+                # persist under the channel id and make it the active account
+                account_id = auth.save_account(self.credentials, self.channel)
+                if account_id != "legacy":
+                    auth.remove_account("legacy")
+                self.cfg["active_account"] = account_id
+                config.save_config(self.cfg)
+                self.accounts = auth.list_accounts()
+                self._populate_account_combos()
                 self.account_label.configure(text=f"Signed in — channel: {name}")
                 self.status_channel.configure(text=f"YouTube channel: {name}")
-                self._log(f"Signed in. Uploading as channel: {name}")
+                self._log(f"Active channel: {name}")
                 self.refresh_playlists()
+        elif etype == "yt_videos":
+            items = ev.get("items")
+            self.yt_videos = items or []
+            self.yt_checked &= {v["id"] for v in self.yt_videos}
+            self.yt_tree.delete(*self.yt_tree.get_children())
+            for i, v in enumerate(self.yt_videos):
+                tag = ("problem" if v["upload_status"] in ("failed", "rejected")
+                       else "uploaded" if v["privacy"] == "public" else "")
+                tags = tuple(t for t in (tag, "odd_row" if i % 2 else None) if t)
+                self.yt_tree.insert(
+                    "", "end", iid=v["id"], tags=tags,
+                    values=(CHECKED if v["id"] in self.yt_checked else UNCHECKED,
+                            v["published"], v["title"], v["duration"],
+                            v["privacy"], f"{v['views']:,}", v["upload_status"]))
+            self.mgr_count_label.configure(
+                text=f"{len(self.yt_videos)} video(s)" if items is not None else "")
+        elif etype == "yt_reload":
+            self.load_yt_videos()
+        elif etype == "update":
+            self._handle_update_event(ev)
+        elif etype == "update_ready":
+            self._save_editor()
+            self.save_settings(silent=True)
+            self._log("Restarting to finish the update…")
+            self.root.after(500, self.root.destroy)
         elif etype == "auth_err":
             self.signin_btn.configure(state="normal")
             self._log(f"Sign-in problem: {ev['error']}")
@@ -1578,6 +1895,48 @@ class App:
             else:
                 self.account_label.configure(text="Not signed in.")
                 messagebox.showerror("Sign in failed", ev["error"])
+
+    def _handle_update_event(self, ev: dict) -> None:
+        info = ev.get("info")
+        if info is None:
+            if ev.get("manual"):
+                messagebox.showinfo("Updates", "You're running the latest version.")
+            return
+        self._log(f"New version v{info['version']} is available.")
+        if self.worker and self.worker.is_alive():
+            self._log("Update postponed — uploads are running. Use Settings → "
+                      "Check for updates later.")
+            return
+        if updater.can_self_update() and info.get("exe_url"):
+            if not messagebox.askyesno(
+                    "Update available",
+                    f"Version {info['version']} is available "
+                    f"(you have {__version__}).\n\nDownload and restart now?"):
+                return
+            self._log(f"Downloading v{info['version']}…")
+
+            def worker():
+                try:
+                    last = [0]
+
+                    def progress(pct):
+                        if pct - last[0] >= 25:
+                            last[0] = pct
+                            self.events.put({"type": "log",
+                                             "text": f"Update download: {pct:.0f}%"})
+
+                    updater.apply_update(info["exe_url"], progress)
+                    self.events.put({"type": "update_ready"})
+                except Exception as exc:
+                    self.events.put({"type": "log",
+                                     "text": f"Update failed: {exc}"})
+
+            threading.Thread(target=worker, daemon=True).start()
+        else:
+            messagebox.showinfo(
+                "Update available",
+                f"Version {info['version']} is available (you have {__version__}).\n"
+                f"Download it from:\n{info['html_url']}")
 
     def _item_by_key(self, key: str):
         for item in self.queue_items:

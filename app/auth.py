@@ -7,6 +7,8 @@ secondary YouTube channel is picked.
 """
 from __future__ import annotations
 
+import json
+
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -27,32 +29,97 @@ SUCCESS_MESSAGE = (
 )
 
 
-def load_credentials() -> Credentials | None:
-    """Returns saved credentials, refreshed if needed, else None."""
-    if not config.TOKEN_PATH.exists():
+ACCOUNTS_DIR = config.APP_DIR / "accounts"
+
+
+def _scopes_ok(data: dict) -> bool:
+    return set(SCOPES) <= set(data.get("scopes") or [])
+
+
+def list_accounts() -> list[dict]:
+    """All saved channel accounts: [{'id', 'title'}]."""
+    out = []
+    if ACCOUNTS_DIR.is_dir():
+        for path in sorted(ACCOUNTS_DIR.glob("*.json")):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            out.append({"id": path.stem,
+                        "title": (data.get("_meta") or {}).get("title", path.stem)})
+    return out
+
+
+def save_account(creds: Credentials, channel: dict | None) -> str:
+    """Persist credentials under the channel id; returns the account id."""
+    ACCOUNTS_DIR.mkdir(parents=True, exist_ok=True)
+    account_id = (channel or {}).get("id") or "account"
+    data = json.loads(creds.to_json())
+    data["_meta"] = {"title": (channel or {}).get("title") or account_id}
+    (ACCOUNTS_DIR / f"{account_id}.json").write_text(
+        json.dumps(data, indent=2), encoding="utf-8")
+    return account_id
+
+
+def load_account(account_id: str) -> Credentials | None:
+    """Credentials of one saved account, refreshed if needed."""
+    path = ACCOUNTS_DIR / f"{account_id}.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not _scopes_ok(data):
         return None
     try:
-        import json
-        stored = set(json.loads(
-            config.TOKEN_PATH.read_text(encoding="utf-8")).get("scopes") or [])
-        if not set(SCOPES) <= stored:
-            # Token predates a scope addition (e.g. playlists) — force re-consent
-            return None
-    except (ValueError, OSError):
-        return None
-    try:
-        creds = Credentials.from_authorized_user_file(str(config.TOKEN_PATH), SCOPES)
-    except (ValueError, OSError):
+        creds = Credentials.from_authorized_user_info(data, SCOPES)
+    except ValueError:
         return None
     if creds.valid:
         return creds
     if creds.expired and creds.refresh_token:
         try:
             creds.refresh(Request())
-            _save(creds)
+            refreshed = json.loads(creds.to_json())
+            refreshed["_meta"] = data.get("_meta", {})
+            path.write_text(json.dumps(refreshed, indent=2), encoding="utf-8")
             return creds
         except Exception:
             return None
+    return None
+
+
+def remove_account(account_id: str) -> None:
+    try:
+        (ACCOUNTS_DIR / f"{account_id}.json").unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def migrate_legacy_token() -> str | None:
+    """Move the single-account-era token.json into the accounts store."""
+    if not config.TOKEN_PATH.exists():
+        return None
+    try:
+        data = json.loads(config.TOKEN_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    config.TOKEN_PATH.unlink(missing_ok=True)
+    if not _scopes_ok(data):
+        return None
+    ACCOUNTS_DIR.mkdir(parents=True, exist_ok=True)
+    data.setdefault("_meta", {"title": "My channel"})
+    (ACCOUNTS_DIR / "legacy.json").write_text(
+        json.dumps(data, indent=2), encoding="utf-8")
+    return "legacy"
+
+
+def load_credentials() -> Credentials | None:
+    """Back-compat: credentials of the first available account."""
+    migrate_legacy_token()
+    for account in list_accounts():
+        creds = load_account(account["id"])
+        if creds is not None:
+            return creds
     return None
 
 

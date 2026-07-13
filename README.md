@@ -22,6 +22,12 @@ Twitch VOD recordings to YouTube — sequentially, with all the stream metadata 
   YouTube confirmed the video exists, and they go to the Recycle Bin, not permanent deletion.
 - Modern Fluent-inspired UI with dark and light mode (Settings → Appearance), animated
   upload progress, and a theme-matched title bar — drawn natively, so it stays responsive
+- **Multiple channels**: add several YouTube accounts/brand channels and switch the active
+  one from a dropdown (Settings or the My YouTube tab); uploads go to the active channel
+- **My YouTube tab**: built-in manager for videos already on the channel — list with
+  privacy/views/status, bulk add-to-playlist, bulk privacy change, open in browser, delete
+- **Auto-update**: the desktop app checks GitHub releases on startup and can download the
+  new portable exe, swap itself and restart (Settings → Check for updates)
 - **Automation tab**: watch the VOD folder in the background — rescan on an interval,
   auto-queue new ready VODs with generated metadata, and auto-start uploads
 - **Playlists tab**: browse/create channel playlists and set a default rule for uploads —

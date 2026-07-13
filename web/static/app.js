@@ -296,6 +296,21 @@ function renderAuth() {
     el("device-code-box").classList.add("hidden");
   }
 }
+function renderAccounts() {
+  const sel = el("account-select");
+  if (document.activeElement === sel) return;
+  sel.innerHTML = "";
+  for (const a of (S.accounts || [])) {
+    const o = document.createElement("option");
+    o.value = a.id;
+    o.textContent = a.title;
+    sel.appendChild(o);
+  }
+  if (S.active_account) sel.value = S.active_account;
+}
+async function switchAccount() {
+  await api("/api/auth/switch", { id: el("account-select").value });
+}
 async function connectYouTube() {
   const id = el("client-id").value.trim(), secret = el("client-secret").value.trim();
   if (id || secret) {
@@ -361,6 +376,7 @@ async function refresh() {
   } catch (e) { return; }
   el("version").textContent = "v" + S.version;
   renderAuth();
+  renderAccounts();
   renderCooldown();
   renderAutomation();
   renderSettings();

@@ -58,6 +58,7 @@ DEFAULTS = {
     # Web/Docker mode: OAuth client of type "TVs and Limited Input devices"
     "client_id": "",
     "client_secret": "",
+    "active_account": "",           # channel id of the selected account
 }
 
 AFTER_UPLOAD_CHOICES = {

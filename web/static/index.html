@@ -175,8 +175,10 @@
           enabled). Alternatively drop its <code>client_secret.json</code> into the
           config volume.</p>
         <div class="field-row">
-          <button class="btn btn-accent" onclick="connectYouTube()">Connect YouTube…</button>
-          <button class="btn btn-ghost" onclick="api('/api/auth/signout')">Sign out</button>
+          <span>Active channel</span>
+          <select id="account-select" class="input" onchange="switchAccount()"></select>
+          <button class="btn btn-accent" onclick="connectYouTube()">➕ Connect another…</button>
+          <button class="btn btn-ghost" onclick="api('/api/auth/signout')">Remove account</button>
           <span id="auth-status" class="chip chip-muted"></span>
         </div>
         <div id="device-code-box" class="device-code hidden">
