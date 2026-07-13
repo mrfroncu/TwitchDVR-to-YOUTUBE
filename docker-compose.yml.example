@@ -1,0 +1,19 @@
+# Copy this file to docker-compose.yml on the server and adjust the paths.
+# docker-compose.yml is gitignored and excluded from deploys, so your server
+# copy is never overwritten by an update.
+services:
+  twitchdvr2yt:
+    build: .
+    container_name: twitchdvr2yt
+    ports:
+      - "4091:4091"
+    volumes:
+      # App config, OAuth token and upload history (small, keep on fast disk)
+      - ./config:/config
+      # Your LiveStreamDVR VOD library (the folder that contains the
+      # per-stream subfolders). Needs write access if you enable
+      # delete-after-upload.
+      - /path/to/your/vods:/vods
+    environment:
+      - TZ=Europe/Warsaw
+    restart: unless-stopped

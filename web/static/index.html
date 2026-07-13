@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TwitchDVR → YouTube</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📤</text></svg>">
+</head>
+<body>
+<aside class="sidebar">
+  <div class="logo">
+    <div class="logo-mark">▶</div>
+    <div>
+      <div class="logo-title">TwitchDVR</div>
+      <div class="logo-sub">to YouTube</div>
+    </div>
+  </div>
+  <nav>
+    <button class="nav-btn active" data-view="videos">🎬 <span>Videos</span></button>
+    <button class="nav-btn" data-view="queue">📤 <span>Queue</span> <em id="queue-badge" class="badge hidden"></em></button>
+    <button class="nav-btn" data-view="automation">🤖 <span>Automation</span></button>
+    <button class="nav-btn" data-view="playlists">📃 <span>Playlists</span></button>
+    <button class="nav-btn" data-view="settings">⚙️ <span>Settings</span></button>
+  </nav>
+  <div class="sidebar-foot">
+    <div id="channel-chip" class="chip chip-muted">Not connected</div>
+    <div class="version" id="version"></div>
+  </div>
+</aside>
+
+<main>
+  <!-- ============================================================ VIDEOS -->
+  <section id="view-videos" class="view">
+    <header class="view-head">
+      <h1>Videos</h1>
+      <div class="toolbar">
+        <input id="folder-input" class="input grow" placeholder="/vods" spellcheck="false">
+        <button class="btn btn-accent" onclick="doScan()">Scan</button>
+      </div>
+    </header>
+    <div class="card">
+      <div class="bulkbar">
+        <button class="btn btn-ghost sm" onclick="checkAll(true)">Check all</button>
+        <button class="btn btn-ghost sm" onclick="checkAll(false)">None</button>
+        <span class="sep"></span>
+        <button class="btn btn-accent sm" onclick="bulk('queue')">Add to queue ▶</button>
+        <button class="btn sm" onclick="bulk('reset_meta')">Reset metadata</button>
+        <select id="bulk-privacy" class="input sm">
+          <option>private</option><option>unlisted</option><option>public</option>
+        </select>
+        <button class="btn sm" onclick="bulk('privacy', el('bulk-privacy').value)">Set privacy</button>
+        <select id="bulk-playlist" class="input sm"></select>
+        <button class="btn sm" onclick="bulk('playlist', el('bulk-playlist').value)">Set playlist</button>
+        <span class="sep"></span>
+        <button class="btn sm" onclick="bulk('verify')">Verify on YouTube</button>
+        <button class="btn sm" onclick="bulk('reset_state', '', true)">Reset upload state</button>
+        <button class="btn btn-danger sm" onclick="bulk('delete_local', '', true)">🗑 Delete local files</button>
+      </div>
+      <div class="table-wrap">
+        <table id="videos-table">
+          <thead><tr>
+            <th class="w-ck"></th><th>Date</th><th>Streamer</th><th>Stream title</th>
+            <th>Length</th><th>Size</th><th>Ch.</th><th>Status</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================= QUEUE -->
+  <section id="view-queue" class="view hidden">
+    <header class="view-head">
+      <h1>Queue &amp; Progress</h1>
+      <div class="toolbar">
+        <button id="btn-start" class="btn btn-accent" onclick="api('/api/queue/start')">▶ Start uploads</button>
+        <button class="btn" onclick="api('/api/queue/pause')">⏸ Pause after current</button>
+        <button class="btn" onclick="api('/api/queue/cancel')">✖ Cancel current</button>
+        <button class="btn btn-ghost" onclick="api('/api/queue/clear_finished')">Clear finished</button>
+      </div>
+    </header>
+    <div class="card">
+      <div id="queue-list" class="queue-list"></div>
+    </div>
+  </section>
+
+  <!-- ======================================================== AUTOMATION -->
+  <section id="view-automation" class="view hidden">
+    <header class="view-head"><h1>Automation</h1></header>
+    <div class="card pad">
+      <label class="switch-row">
+        <input type="checkbox" id="auto-scan" onchange="saveAutomation()">
+        <span>Watch the VOD folder and rescan automatically</span>
+      </label>
+      <div class="field-row">
+        <span>Scan every</span>
+        <input id="auto-interval" class="input xs" type="number" min="1" max="1440"
+               onchange="saveAutomation()">
+        <span>minutes</span>
+        <span id="auto-status" class="chip chip-muted"></span>
+        <button class="btn sm" onclick="api('/api/automation/run')">Run a scan cycle now</button>
+      </div>
+      <label class="switch-row">
+        <input type="checkbox" id="auto-queue" onchange="saveAutomation()">
+        <span>Automatically queue new ready VODs (generated metadata + default playlist rule)</span>
+      </label>
+      <label class="switch-row">
+        <input type="checkbox" id="auto-start" onchange="saveAutomation()">
+        <span>Automatically start uploading when the queue has items</span>
+      </label>
+      <label class="switch-row">
+        <input type="checkbox" id="auto-finalized" onchange="saveAutomation()">
+        <span>Skip raw .ts / not-finalized captures (they may still be recording)</span>
+      </label>
+    </div>
+  </section>
+
+  <!-- ========================================================== PLAYLISTS -->
+  <section id="view-playlists" class="view hidden">
+    <header class="view-head">
+      <h1>Playlists</h1>
+      <div class="toolbar">
+        <button class="btn" onclick="api('/api/playlists/refresh')">⟳ Refresh</button>
+        <input id="new-pl-title" class="input" placeholder="New playlist name">
+        <select id="new-pl-privacy" class="input sm">
+          <option>unlisted</option><option>private</option><option>public</option>
+        </select>
+        <button class="btn btn-accent" onclick="createPlaylist()">Create</button>
+      </div>
+    </header>
+    <div class="card">
+      <div class="table-wrap">
+        <table id="playlists-table">
+          <thead><tr><th>Title</th><th>Videos</th><th>Privacy</th><th>ID</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card pad">
+      <h2>Default playlist for uploads</h2>
+      <label class="switch-row"><input type="radio" name="plmode" value="none"
+        onchange="savePlaylistRule()"><span>Don't add uploads to any playlist</span></label>
+      <label class="switch-row"><input type="radio" name="plmode" value="fixed"
+        onchange="savePlaylistRule()"><span>Always add to:</span>
+        <select id="pl-fixed" class="input" onchange="savePlaylistRule()"></select></label>
+      <label class="switch-row"><input type="radio" name="plmode" value="template"
+        onchange="savePlaylistRule()"><span>Auto-create by name:</span>
+        <input id="pl-template" class="input grow" onchange="savePlaylistRule()"
+               placeholder="{streamer} VODs {year}"></label>
+      <p class="muted">Placeholders: {streamer} {login} {game} {games} {year} {month}
+        {date} {title}. Missing playlists are created on demand (50 quota units;
+        adding a video costs another 50).</p>
+    </div>
+  </section>
+
+  <!-- =========================================================== SETTINGS -->
+  <section id="view-settings" class="view hidden">
+    <header class="view-head"><h1>Settings</h1></header>
+    <div class="card pad">
+      <h2>YouTube account</h2>
+      <div id="auth-box">
+        <div class="field-row">
+          <input id="client-id" class="input grow" placeholder="OAuth client ID" spellcheck="false">
+          <input id="client-secret" class="input grow" type="password"
+                 placeholder="OAuth client secret" spellcheck="false">
+        </div>
+        <p class="muted">Create an OAuth client of type <b>“TVs and Limited Input
+          devices”</b> in Google Cloud Console (the YouTube Data API v3 must be
+          enabled). Alternatively drop its <code>client_secret.json</code> into the
+          config volume.</p>
+        <div class="field-row">
+          <button class="btn btn-accent" onclick="connectYouTube()">Connect YouTube…</button>
+          <button class="btn btn-ghost" onclick="api('/api/auth/signout')">Sign out</button>
+          <span id="auth-status" class="chip chip-muted"></span>
+        </div>
+        <div id="device-code-box" class="device-code hidden">
+          Enter this code at <a id="device-url" href="https://www.google.com/device"
+          target="_blank" rel="noopener">google.com/device</a>:
+          <div id="device-code" class="code"></div>
+        </div>
+      </div>
+    </div>
+    <div class="card pad">
+      <h2>Upload defaults</h2>
+      <div class="field-row">
+        <span>Privacy</span>
+        <select id="set-privacy" class="input sm" onchange="saveSettings()">
+          <option>private</option><option>unlisted</option><option>public</option>
+        </select>
+        <span>Category</span>
+        <select id="set-category" class="input" onchange="saveSettings()">
+          <option value="20">Gaming</option><option value="24">Entertainment</option>
+          <option value="22">People &amp; Blogs</option>
+          <option value="28">Science &amp; Technology</option>
+        </select>
+      </div>
+      <div class="field-row">
+        <span>Title template</span>
+        <input id="set-template" class="input grow" onchange="saveSettings()">
+      </div>
+      <p class="muted">Placeholders: {title} {streamer} {login} {date} {game} {games}</p>
+      <label class="switch-row"><input type="checkbox" id="set-notify"
+        onchange="saveSettings()"><span>Notify subscribers on upload</span></label>
+      <label class="switch-row"><input type="checkbox" id="set-kids"
+        onchange="saveSettings()"><span>Mark as “made for kids”</span></label>
+      <div class="field-row">
+        <span>After verified upload</span>
+        <select id="set-after" class="input" onchange="saveSettings()">
+          <option value="keep">Keep local files</option>
+          <option value="trash_video">Delete the video file (permanent!)</option>
+          <option value="trash_folder">Delete the whole VOD folder (permanent!)</option>
+        </select>
+      </div>
+      <p class="muted">Server mode has no recycle bin — deletion is permanent and only
+        ever happens after YouTube confirms the video exists.</p>
+    </div>
+  </section>
+
+  <!-- ------------------------------------------------------------ editor -->
+  <div id="editor" class="editor hidden">
+    <div class="editor-head">
+      <h2 id="editor-title-label">Edit metadata</h2>
+      <button class="btn btn-ghost sm" onclick="closeEditor()">✕</button>
+    </div>
+    <label>Title <span id="title-count" class="muted"></span></label>
+    <input id="ed-title" class="input" maxlength="100">
+    <label>Tags (comma separated)</label>
+    <input id="ed-tags" class="input">
+    <div class="field-row">
+      <div class="grow"><label>Privacy</label>
+        <select id="ed-privacy" class="input">
+          <option>private</option><option>unlisted</option><option>public</option>
+        </select></div>
+      <div class="grow"><label>Playlist</label>
+        <select id="ed-playlist" class="input"></select></div>
+    </div>
+    <label>Description (chapter timestamps become YouTube chapters)</label>
+    <textarea id="ed-desc" class="input" rows="12" spellcheck="false"></textarea>
+    <div class="field-row">
+      <button class="btn btn-accent" onclick="saveEditor()">Save</button>
+      <button class="btn" onclick="resetEditor()">Reset to generated</button>
+      <button class="btn" onclick="saveEditor(true)">Save &amp; queue ▶</button>
+    </div>
+  </div>
+</main>
+
+<footer class="logbar" id="logbar">
+  <div class="logbar-head" onclick="toggleLog()">
+    <span>Activity log</span><span id="log-last" class="muted"></span>
+  </div>
+  <div id="log-lines" class="log-lines"></div>
+</footer>
+
+<div id="toast" class="toast hidden"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

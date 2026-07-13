@@ -6,3 +6,5 @@ client_secret*.json
 token.json
 build/
 dist/
+docker-compose.yml
+config/
