@@ -17,6 +17,7 @@ from app.version import __version__  # noqa: E402
 # googleapiclient needs its bundled API discovery documents and the package
 # metadata of the google libs at runtime.
 datas = collect_data_files("googleapiclient.discovery_cache")
+datas += collect_data_files("sv_ttk")   # theme .tcl files
 for pkg in ("google-api-python-client", "google-auth", "google-auth-oauthlib",
             "google-auth-httplib2"):
     datas += copy_metadata(pkg)

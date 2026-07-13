@@ -21,7 +21,19 @@ try:
 except ImportError:      # running from source without the dependency
     send2trash = None
 
+try:
+    import sv_ttk
+except ImportError:      # theme is optional; the app still works unthemed
+    sv_ttk = None
+
 CHECKED, UNCHECKED = "☑", "☐"
+
+THEME_COLORS = {
+    "dark": {"ok": "#5ecb63", "err": "#ff7069", "info": "#67b7ff",
+             "muted": "#9a9a9a", "field_bg": "#2a2a2a", "fg": "#fafafa"},
+    "light": {"ok": "#2e7d32", "err": "#b71c1c", "info": "#1565c0",
+              "muted": "#666666", "field_bg": "#ffffff", "fg": "#1c1c1c"},
+}
 
 POLL_MS = 100
 
@@ -72,15 +84,18 @@ class App:
         self._editing_key: str | None = None
 
         root.title(f"TwitchDVR to YouTube Uploader  v{__version__}")
-        root.geometry("1050x780")
-        root.minsize(860, 620)
+        root.geometry("1240x820")
+        root.minsize(1000, 640)
 
+        self.colors = THEME_COLORS.get(self.cfg.get("theme", "dark"),
+                                       THEME_COLORS["dark"])
         self.notebook = ttk.Notebook(root)
         self.notebook.pack(fill="both", expand=True, padx=6, pady=(6, 0))
         self._build_videos_tab()
         self._build_queue_tab()
         self._build_settings_tab()
         self._build_status_bar()
+        self._apply_theme(self.cfg.get("theme", "dark"))
 
         root.protocol("WM_DELETE_WINDOW", self._on_close)
         root.after(POLL_MS, self._poll_events)
@@ -92,6 +107,48 @@ class App:
         if self.cfg.get("vod_folder") and Path(self.cfg["vod_folder"]).is_dir():
             self.folder_var.set(self.cfg["vod_folder"])
             self.root.after(200, self.scan_folder)
+
+    # ----------------------------------------------------------------- theme --
+    def _apply_theme(self, theme: str) -> None:
+        theme = theme if theme in THEME_COLORS else "dark"
+        self.colors = THEME_COLORS[theme]
+        if sv_ttk is not None:
+            sv_ttk.set_theme(theme)
+        style = ttk.Style()
+        style.configure("Muted.TLabel", foreground=self.colors["muted"])
+        for tree in (self.video_tree, self.queue_tree):
+            tree.tag_configure("uploaded", foreground=self.colors["ok"])
+            tree.tag_configure("done", foreground=self.colors["ok"])
+            tree.tag_configure("problem", foreground=self.colors["err"])
+            tree.tag_configure("error", foreground=self.colors["err"])
+            tree.tag_configure("uploading", foreground=self.colors["info"])
+        for txt in (self.desc_text, self.log_text):
+            txt.configure(bg=self.colors["field_bg"], fg=self.colors["fg"],
+                          insertbackground=self.colors["fg"],
+                          relief="flat", highlightthickness=0)
+        self._set_titlebar_dark(theme == "dark")
+        self._update_title_count()
+
+    def _set_titlebar_dark(self, dark: bool) -> None:
+        if sys.platform != "win32":
+            return
+        try:
+            from ctypes import byref, c_int, windll
+            self.root.update_idletasks()
+            hwnd = windll.user32.GetParent(self.root.winfo_id())
+            # DWMWA_USE_IMMERSIVE_DARK_MODE
+            windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, byref(c_int(int(dark))), 4)
+            # nudge a repaint so the title bar updates immediately
+            self.root.attributes("-alpha", 0.99)
+            self.root.attributes("-alpha", 1.0)
+        except Exception:
+            pass
+
+    def _on_theme_change(self, _event=None) -> None:
+        theme = self.theme_var.get()
+        self.cfg["theme"] = theme
+        config.save_config(self.cfg)
+        self._apply_theme(theme)
 
     # ------------------------------------------------------------ videos tab --
     def _build_videos_tab(self) -> None:
@@ -129,8 +186,6 @@ class App:
         self.video_tree.bind("<Button-1>", self._on_video_tree_click)
         self.video_tree.bind("<<TreeviewSelect>>", self._on_video_select)
         self.video_tree.bind("<Double-1>", self._open_vod_folder)
-        self.video_tree.tag_configure("uploaded", foreground="#2e7d32")
-        self.video_tree.tag_configure("problem", foreground="#b71c1c")
 
         # ---- bulk actions on checked rows
         bulk = ttk.LabelFrame(tab, text="Bulk actions (apply to checked rows)")
@@ -142,7 +197,7 @@ class App:
         ttk.Button(row, text="None", width=6,
                    command=lambda: self._set_all_videos_checked(False)).pack(
             side="left", padx=(4, 10))
-        ttk.Button(row, text="Add to queue ▶",
+        ttk.Button(row, text="Add to queue ▶", style="Accent.TButton",
                    command=self.bulk_add_checked).pack(side="left")
         ttk.Button(row, text="Reset metadata",
                    command=self.bulk_reset_meta).pack(side="left", padx=4)
@@ -152,11 +207,13 @@ class App:
                      values=("private", "unlisted", "public")).pack(side="left")
         ttk.Button(row, text="Apply",
                    command=self.bulk_apply_privacy).pack(side="left", padx=(2, 10))
-        ttk.Button(row, text="Verify on YouTube",
+        row2 = ttk.Frame(bulk)
+        row2.pack(fill="x", padx=6, pady=(0, 6))
+        ttk.Button(row2, text="Verify on YouTube",
                    command=self.bulk_verify).pack(side="left")
-        ttk.Button(row, text="🗑 Recycle local files",
+        ttk.Button(row2, text="🗑 Recycle local files",
                    command=self.bulk_recycle).pack(side="left", padx=4)
-        ttk.Button(row, text="Reset upload state",
+        ttk.Button(row2, text="Reset upload state",
                    command=self.bulk_reset_state).pack(side="left")
 
         # ---- metadata editor
@@ -198,7 +255,7 @@ class App:
         btns.pack(fill="x", padx=6, pady=(0, 8))
         ttk.Button(btns, text="Reset to generated metadata",
                    command=self._regenerate_selected).pack(side="left")
-        ttk.Button(btns, text="Add selected to queue ▶",
+        ttk.Button(btns, text="Add selected to queue ▶", style="Accent.TButton",
                    command=self.add_selected_to_queue).pack(side="right")
 
     # ------------------------------------------------------------- queue tab --
@@ -221,13 +278,11 @@ class App:
         self.queue_checked: set[str] = set()
         self.queue_tree.bind("<Button-1>", self._on_queue_tree_click)
         self.queue_tree.pack(fill="both", expand=True, padx=8, pady=(8, 4))
-        self.queue_tree.tag_configure("done", foreground="#2e7d32")
-        self.queue_tree.tag_configure("error", foreground="#b71c1c")
-        self.queue_tree.tag_configure("uploading", foreground="#1565c0")
 
         ctl = ttk.Frame(tab)
         ctl.pack(fill="x", padx=8, pady=4)
-        self.start_btn = ttk.Button(ctl, text="▶ Start uploads", command=self.start_uploads)
+        self.start_btn = ttk.Button(ctl, text="▶ Start uploads", style="Accent.TButton",
+                                    command=self.start_uploads)
         self.start_btn.pack(side="left")
         self.pause_btn = ttk.Button(ctl, text="⏸ Pause after current",
                                     command=self.pause_uploads, state="disabled")
@@ -265,6 +320,17 @@ class App:
         tab = ttk.Frame(self.notebook)
         self.notebook.add(tab, text="  Settings  ")
 
+        looks = ttk.LabelFrame(tab, text="Appearance")
+        looks.pack(fill="x", padx=10, pady=(10, 0))
+        row = ttk.Frame(looks)
+        row.pack(fill="x", padx=8, pady=8)
+        ttk.Label(row, text="Theme:").pack(side="left")
+        self.theme_var = tk.StringVar(value=self.cfg.get("theme", "dark"))
+        theme_box = ttk.Combobox(row, textvariable=self.theme_var, width=8,
+                                 state="readonly", values=("dark", "light"))
+        theme_box.pack(side="left", padx=6)
+        theme_box.bind("<<ComboboxSelected>>", self._on_theme_change)
+
         acct = ttk.LabelFrame(tab, text="YouTube account")
         acct.pack(fill="x", padx=10, pady=10)
 
@@ -287,7 +353,7 @@ class App:
         row = ttk.Frame(acct)
         row.pack(fill="x", padx=8, pady=(4, 8))
         self.signin_btn = ttk.Button(row, text="Sign in with Google…",
-                                     command=self.sign_in)
+                                     style="Accent.TButton", command=self.sign_in)
         self.signin_btn.pack(side="left")
         ttk.Button(row, text="Sign out", command=self.sign_out).pack(side="left", padx=6)
         self.account_label = ttk.Label(row, text="Not signed in.")
@@ -296,7 +362,7 @@ class App:
         hint = ("The browser sign-in page is where you pick the Google account AND the "
                 "YouTube channel (brand accounts are listed there). To connect a different "
                 "channel: Sign out, then Sign in again.")
-        ttk.Label(acct, text=hint, wraplength=900, foreground="#555"
+        ttk.Label(acct, text=hint, wraplength=900, style="Muted.TLabel"
                   ).pack(anchor="w", padx=8, pady=(0, 8))
 
         up = ttk.LabelFrame(tab, text="Upload defaults")
@@ -322,7 +388,7 @@ class App:
         ttk.Entry(row, textvariable=self.template_var).pack(
             side="left", fill="x", expand=True, padx=6)
         ttk.Label(up, text="Placeholders: {title} {streamer} {login} {date} {game} {games}",
-                  foreground="#555").pack(anchor="w", padx=8)
+                  style="Muted.TLabel").pack(anchor="w", padx=8)
 
         row = ttk.Frame(up)
         row.pack(fill="x", padx=8, pady=2)
@@ -336,7 +402,7 @@ class App:
                      values=list(config.AFTER_UPLOAD_CHOICES)).pack(side="left", padx=6)
         ttk.Label(row, text="(only after YouTube confirms the video exists; "
                             "files go to the Recycle Bin)",
-                  foreground="#555").pack(side="left")
+                  style="Muted.TLabel").pack(side="left")
 
         row = ttk.Frame(up)
         row.pack(fill="x", padx=8, pady=(6, 8))
@@ -351,7 +417,7 @@ class App:
         ttk.Entry(row, textvariable=self.chunk_var, width=5).pack(side="left", padx=4)
         ttk.Label(row, text="(64–256 recommended on fast connections; each chunk "
                             "is one request, so bigger = faster)",
-                  foreground="#555").pack(side="left")
+                  style="Muted.TLabel").pack(side="left")
 
         ttk.Button(tab, text="Save settings", command=self.save_settings
                    ).pack(anchor="e", padx=10)
@@ -363,7 +429,7 @@ class App:
             "Important: while your Google Cloud OAuth app is unverified / in testing mode, "
             "videos uploaded through the API are locked to PRIVATE by YouTube. Complete the "
             "API audit/verification to allow public uploads.")
-        ttk.Label(tab, text=notes, wraplength=940, foreground="#555", justify="left"
+        ttk.Label(tab, text=notes, wraplength=940, style="Muted.TLabel", justify="left"
                   ).pack(anchor="w", padx=10, pady=10)
 
     def _build_status_bar(self) -> None:
@@ -649,7 +715,7 @@ class App:
     def _update_title_count(self) -> None:
         n = len(self.title_var.get())
         self.title_count.configure(
-            text=f"{n}/100", foreground="#b71c1c" if n > 100 else "#000")
+            text=f"{n}/100", foreground=self.colors["err"] if n > 100 else "")
 
     def _regenerate_selected(self) -> None:
         sel = self.video_tree.selection()

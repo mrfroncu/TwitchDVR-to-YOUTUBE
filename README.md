@@ -20,6 +20,7 @@ Twitch VOD recordings to YouTube — sequentially, with all the stream metadata 
   VOD folder — to the Recycle Bin, automatically (Settings → "After verified upload") or
   manually via the bulk "🗑 Recycle local files" button. Files are never touched unless
   YouTube confirmed the video exists, and they go to the Recycle Bin, not permanent deletion.
+- Modern Fluent-style UI (Sun Valley theme) with dark and light mode (Settings → Appearance)
 
 ## Requirements
 
