@@ -5,61 +5,45 @@ on:
     branches: [main]
   workflow_dispatch:
 
-concurrency:
-  group: deploy
-  cancel-in-progress: false
-
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    env:
-      SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
-      SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
-      SSHPASS: ${{ secrets.DEPLOY_SSH_PASSWORD }}
-      SSH_PORT: ${{ secrets.DEPLOY_SSH_PORT }}
-      DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+
     steps:
-      - name: Check deploy configuration
-        id: check
-        run: |
-          if [ -z "$SSH_HOST" ] || [ -z "$SSH_USER" ] || [ -z "$SSHPASS" ] || [ -z "$DEPLOY_PATH" ]; then
-            echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Deploy secrets/variables not configured - skipping deploy."
-          else
-            echo "configured=true" >> "$GITHUB_OUTPUT"
-          fi
-
       - uses: actions/checkout@v4
-        if: steps.check.outputs.configured == 'true'
 
-      - name: Install sshpass and rsync
-        if: steps.check.outputs.configured == 'true'
-        run: sudo apt-get update -q && sudo apt-get install -y -q sshpass rsync
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:github
 
-      - name: Sync files to server
-        if: steps.check.outputs.configured == 'true'
+      - name: Start ssh-agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Verify SSH
         run: |
-          PORT="${SSH_PORT:-22}"
-          sshpass -e rsync -az --delete \
-            -e "ssh -p $PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" \
+          ssh -o StrictHostKeyChecking=no \
+            ${{ secrets.SSH_USER }}@${{ secrets.TAILSCALE_HOST }} \
+            "hostname"
+
+      - name: Sync files
+        run: |
+          rsync -az --delete \
+            -e "ssh -o StrictHostKeyChecking=no" \
             --exclude '.git' \
             --exclude '.github' \
             --exclude '__pycache__' \
             --exclude 'dist' \
             --exclude 'build' \
-            --exclude 'docker-compose.yml' \
-            --exclude 'config' \
-            --exclude 'client_secret*.json' \
-            ./ "$SSH_USER@$SSH_HOST:$DEPLOY_PATH/"
+            ./ \
+            ${{ secrets.SSH_USER }}@${{ secrets.TAILSCALE_HOST }}:${{ secrets.DEPLOY_PATH }}/
 
-      - name: Rebuild and restart the container
-        if: steps.check.outputs.configured == 'true'
+      - name: Restart containers
         run: |
-          PORT="${SSH_PORT:-22}"
-          sshpass -e ssh -p "$PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-            "$SSH_USER@$SSH_HOST" \
-            "cd '$DEPLOY_PATH' \
-             && if [ ! -f docker-compose.yml ]; then cp docker-compose.yml.example docker-compose.yml; echo 'NOTE: created docker-compose.yml from the example - edit the volume paths!'; fi \
-             && docker compose down \
-             && docker compose build \
-             && docker compose up -d"
+          ssh -o StrictHostKeyChecking=no \
+            ${{ secrets.SSH_USER }}@${{ secrets.TAILSCALE_HOST }} \
+            "cd '${{ secrets.DEPLOY_PATH }}' && docker compose up -d --build"
