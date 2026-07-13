@@ -1,11 +1,27 @@
-"""Configuration and persistent state, stored in %APPDATA%\\TwitchDVR-to-YouTube."""
+"""Configuration and persistent state.
+
+Stored per platform: %APPDATA%\\TwitchDVR-to-YouTube on Windows,
+~/Library/Application Support/TwitchDVR-to-YouTube on macOS,
+$XDG_CONFIG_HOME/TwitchDVR-to-YouTube elsewhere.
+"""
 import json
 import os
+import sys
 from pathlib import Path
 
 APP_NAME = "TwitchDVR-to-YouTube"
 
-APP_DIR = Path(os.environ.get("APPDATA", str(Path.home()))) / APP_NAME
+
+def _app_dir() -> Path:
+    if sys.platform == "win32":
+        return Path(os.environ.get("APPDATA", str(Path.home()))) / APP_NAME
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / APP_NAME
+    return Path(os.environ.get("XDG_CONFIG_HOME",
+                               str(Path.home() / ".config"))) / APP_NAME
+
+
+APP_DIR = _app_dir()
 CONFIG_PATH = APP_DIR / "config.json"
 TOKEN_PATH = APP_DIR / "token.json"
 REGISTRY_PATH = APP_DIR / "uploads.json"

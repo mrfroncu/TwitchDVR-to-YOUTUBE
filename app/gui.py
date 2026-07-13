@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import os
 import queue
+import subprocess
+import sys
 import threading
 import tkinter as tk
 from datetime import datetime, timezone
@@ -15,6 +17,15 @@ from .uploader import QueueItem, UploadWorker
 from .version import __version__
 
 POLL_MS = 100
+
+
+def open_in_file_manager(path) -> None:
+    if sys.platform == "win32":
+        os.startfile(path)  # noqa: S606
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", str(path)])
+    else:
+        subprocess.Popen(["xdg-open", str(path)])
 
 
 def fmt_size(n: int) -> str:
@@ -383,7 +394,7 @@ class App:
     def _open_vod_folder(self, _event) -> None:
         sel = self.video_tree.selection()
         if sel and sel[0] in self.vods:
-            os.startfile(self.vods[sel[0]].folder)  # noqa: S606
+            open_in_file_manager(self.vods[sel[0]].folder)
 
     # ---------------------------------------------------------------- editor --
     def _on_video_select(self, _event=None) -> None:
