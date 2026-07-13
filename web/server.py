@@ -129,6 +129,11 @@ def create_app() -> FastAPI:
         ctl.sign_out()
         return {"ok": True}
 
+    @app.post("/api/auth/switch")
+    def auth_switch(body: dict):
+        ctl.switch_account(str(body.get("id", "")))
+        return {"ok": True}
+
     @app.post("/api/playlists/refresh")
     def playlists_refresh():
         ctl.refresh_playlists()

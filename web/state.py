@@ -75,13 +75,35 @@ class Controller:
             return [e for e in self.events if e["seq"] > since]
 
     # ------------------------------------------------------------------- auth
+    def _active_account_id(self) -> str | None:
+        accounts = auth.list_accounts()
+        ids = [a["id"] for a in accounts]
+        active = self.cfg.get("active_account")
+        if active in ids:
+            return active
+        return ids[0] if ids else None
+
     def _restore_session(self) -> None:
-        creds = auth.load_credentials()
-        if creds is None:
-            if config.TOKEN_PATH.exists():
-                self.log("Saved session can't be reused (expired or new "
-                         "permissions needed) — connect YouTube again.")
+        auth.migrate_legacy_token()
+        account_id = self._active_account_id()
+        if account_id is None:
             return
+        creds = auth.load_account(account_id)
+        if creds is None:
+            self.log("Saved session can't be reused (expired or new "
+                     "permissions needed) — connect YouTube again.")
+            return
+        self._finish_sign_in(creds)
+
+    def switch_account(self, account_id: str) -> None:
+        creds = auth.load_account(account_id)
+        if creds is None:
+            raise RuntimeError("that account's session expired — connect it again")
+        with self.lock:
+            self.cfg["active_account"] = account_id
+            config.save_config(self.cfg)
+            self.playlists = []
+            self.playlist_ids = {}
         self._finish_sign_in(creds)
 
     def _finish_sign_in(self, creds) -> None:
@@ -91,6 +113,12 @@ class Controller:
             service = auth.build_service(creds)
             self.channel = auth.fetch_channel(service)
             name = self.channel["title"] if self.channel else "(no channel)"
+            account_id = auth.save_account(creds, self.channel)
+            if account_id != "legacy":
+                auth.remove_account("legacy")
+            with self.lock:
+                self.cfg["active_account"] = account_id
+                config.save_config(self.cfg)
             self.log(f"Connected to YouTube as channel: {name}")
         except Exception as exc:
             self.channel = None
@@ -136,12 +164,23 @@ class Controller:
         return self.auth_state
 
     def sign_out(self) -> None:
-        auth.sign_out()
+        account_id = self._active_account_id()
+        if account_id:
+            auth.remove_account(account_id)
+        with self.lock:
+            self.cfg["active_account"] = ""
+            config.save_config(self.cfg)
         self.credentials = None
         self.channel = None
         self._device_flow = None
         self.auth_state = {"status": "signed_out", "detail": ""}
-        self.log("Signed out.")
+        self.log("Removed the active account.")
+        remaining = self._active_account_id()
+        if remaining:
+            try:
+                self.switch_account(remaining)
+            except RuntimeError:
+                pass
 
     # ------------------------------------------------------------------- scan
     def scan(self, folder: str | None = None) -> int:
@@ -625,6 +664,8 @@ class Controller:
                 "uploads_last_24h": limits.count_recent(self.registry),
                 "auth": {**self.auth_state,
                          "channel": self.channel["title"] if self.channel else None},
+                "accounts": auth.list_accounts(),
+                "active_account": self.cfg.get("active_account", ""),
                 "cfg": {k: v for k, v in self.cfg.items() if k != "client_secret"},
                 "has_client_secret": bool(self.cfg.get("client_secret")),
                 "vods": vods,
