@@ -110,6 +110,18 @@ Status column) and can be uploaded — YouTube accepts MPEG-TS.
   visibility in YouTube Studio after upload.
 - While the consent screen is in *Testing* mode, refresh tokens expire after ~7 days —
   you'll just be asked to sign in again.
+- **Videos longer than 15 minutes** require a verified YouTube account
+  (<https://www.youtube.com/verify>) — otherwise YouTube rejects the video *after* the
+  transfer finishes. The app's post-upload verification catches this and marks the video
+  as *failed*, so it can be re-queued once your account is verified. If a video is stuck
+  showing "uploaded" from an older failed attempt, check it and use **Reset upload state**.
+
+## Upload speed
+
+Uploads are chunked; every chunk is one HTTPS request, so the chunk size caps throughput.
+The default is 64 MB. On fast connections (≥500 Mbps) raise it to 128–256 MB in Settings
+for near-browser speeds; on unstable connections lower it (a failed chunk is what gets
+retried). Each chunk is held in RAM while it's sent.
 
 ## Building the exe / releases
 
