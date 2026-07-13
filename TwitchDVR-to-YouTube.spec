@@ -1,10 +1,18 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec: single-file windowed exe.
+"""PyInstaller spec: single-file windowed executable.
 
 Build with:  pyinstaller TwitchDVR-to-YouTube.spec --noconfirm
-Output:      dist/TwitchDVR-to-YouTube.exe
+Output:      dist/TwitchDVR-to-YouTube.exe   (Windows)
+             dist/TwitchDVR-to-YouTube.app   (macOS)
 """
+import os
+import sys
+
 from PyInstaller.utils.hooks import collect_data_files, copy_metadata
+
+spec_dir = os.path.dirname(os.path.abspath(SPEC))
+sys.path.insert(0, spec_dir)
+from app.version import __version__  # noqa: E402
 
 # googleapiclient needs its bundled API discovery documents and the package
 # metadata of the google libs at runtime.
@@ -47,3 +55,17 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
 )
+
+if sys.platform == "darwin":
+    app = BUNDLE(
+        exe,
+        name="TwitchDVR-to-YouTube.app",
+        icon=None,
+        bundle_identifier="com.froncu.twitchdvr2yt",
+        version=__version__,
+        info_plist={
+            "NSHighResolutionCapable": True,
+            "LSMinimumSystemVersion": "11.0",
+            "CFBundleDisplayName": "TwitchDVR to YouTube",
+        },
+    )

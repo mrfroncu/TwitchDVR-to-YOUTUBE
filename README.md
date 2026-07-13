@@ -14,13 +14,23 @@ Twitch VOD recordings to YouTube — sequentially, with all the stream metadata 
 
 ## Requirements
 
-- Windows. Either grab the standalone `TwitchDVR-to-YouTube.exe` from the
-  [Releases page](../../releases) (no Python needed), or run from source with
-  Python 3.10+ (Tkinter included in the default python.org installer)
+- Windows or macOS. Grab a build from the [Releases page](../../releases)
+  (no Python needed):
+  - `TwitchDVR-to-YouTube.exe` — Windows, single file, just run it
+  - `TwitchDVR-to-YouTube-macos-arm64.dmg` — macOS on Apple Silicon
+  - `TwitchDVR-to-YouTube-macos-intel.dmg` — macOS on Intel (when available)
+
+  …or run from source on any OS (including Linux) with Python 3.10+
+  (Tkinter is included in the default python.org installer).
 - A Google account with a YouTube channel
 
-> Windows SmartScreen may warn about the unsigned exe on first run —
+> **Windows:** SmartScreen may warn about the unsigned exe on first run —
 > click **More info → Run anyway**.
+>
+> **macOS:** open the dmg, drag the app to Applications. Because the app is
+> not notarized, the first launch will be blocked: right-click the app →
+> **Open**, or go to **System Settings → Privacy & Security → Open Anyway**.
+> Alternatively run `xattr -cr "/Applications/TwitchDVR-to-YouTube.app"` once.
 
 ## Setup
 
@@ -95,20 +105,26 @@ Status column) and can be uploaded — YouTube accepts MPEG-TS.
 ## Building the exe / releases
 
 Every push to `main` triggers the [Build & Release workflow](.github/workflows/release.yml):
-it builds a single-file windowed exe with PyInstaller on a Windows runner and publishes a
-GitHub release tagged `v1.0.<build number>` with the exe attached and auto-generated notes.
+it builds the Windows exe and the macOS `.app`/`.dmg` (Apple Silicon, plus Intel as a
+best-effort job) with PyInstaller and publishes a GitHub release tagged `v1.0.<build number>`
+with all binaries attached and auto-generated notes.
 
-To build locally:
+To build locally (on the OS you're building for):
 
 ```
 pip install pyinstaller
 pyinstaller TwitchDVR-to-YouTube.spec --noconfirm
 ```
 
-Output: `dist\TwitchDVR-to-YouTube.exe`.
+Output: `dist\TwitchDVR-to-YouTube.exe` on Windows, `dist/TwitchDVR-to-YouTube.app` on macOS.
 
 ## Where the app stores its data
 
-`%APPDATA%\TwitchDVR-to-YouTube\` — settings (`config.json`), the Google token (`token.json`),
-and the record of what was already uploaded (`uploads.json`). Delete `uploads.json` if you ever
-want to re-upload something the app considers done.
+Settings (`config.json`), the Google token (`token.json`), and the record of what was already
+uploaded (`uploads.json`) live in:
+
+- Windows: `%APPDATA%\TwitchDVR-to-YouTube\`
+- macOS: `~/Library/Application Support/TwitchDVR-to-YouTube/`
+- Linux: `~/.config/TwitchDVR-to-YouTube/`
+
+Delete `uploads.json` if you ever want to re-upload something the app considers done.
