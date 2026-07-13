@@ -87,9 +87,13 @@ def create_app() -> FastAPI:
         return ctl.bulk(body.action, body.keys, body.value)
 
     @app.post("/api/queue/start")
-    def queue_start():
-        ctl.start_uploads()
+    def queue_start(body: dict | None = None):
+        ctl.start_uploads(force=bool((body or {}).get("force")))
         return {"ok": True}
+
+    @app.post("/api/queue/retry_failed")
+    def queue_retry():
+        return {"count": ctl.retry_failed()}
 
     @app.post("/api/queue/pause")
     def queue_pause():

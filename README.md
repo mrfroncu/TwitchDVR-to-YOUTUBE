@@ -121,6 +121,12 @@ Status column) and can be uploaded — YouTube accepts MPEG-TS.
   visibility in YouTube Studio after upload.
 - While the consent screen is in *Testing* mode, refresh tokens expire after ~7 days —
   you'll just be asked to sign in again.
+- **Channel upload limit (`uploadLimitExceeded`)**: besides the API quota, YouTube limits
+  how many videos a channel may upload in a rolling ~24h window. When the app hits it,
+  the queue pauses with a **24.5h cooldown** and resumes automatically (desktop and web,
+  works with automation). You can also set **"Max uploads per 24h"** in Settings so the
+  app stops *before* triggering the error, and a **Retry failed** button re-queues
+  anything that already failed.
 - **Videos longer than 15 minutes** require a verified YouTube account
   (<https://www.youtube.com/verify>) — otherwise YouTube rejects the video *after* the
   transfer finishes. The app's post-upload verification catches this and marks the video

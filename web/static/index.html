@@ -74,12 +74,17 @@
     <header class="view-head">
       <h1>Queue &amp; Progress</h1>
       <div class="toolbar">
-        <button id="btn-start" class="btn btn-accent" onclick="api('/api/queue/start')">▶ Start uploads</button>
+        <button id="btn-start" class="btn btn-accent" onclick="startUploads()">▶ Start uploads</button>
         <button class="btn" onclick="api('/api/queue/pause')">⏸ Pause after current</button>
         <button class="btn" onclick="api('/api/queue/cancel')">✖ Cancel current</button>
+        <button class="btn" onclick="api('/api/queue/retry_failed')">↻ Retry failed</button>
         <button class="btn btn-ghost" onclick="api('/api/queue/clear_finished')">Clear finished</button>
       </div>
     </header>
+    <div id="cooldown-banner" class="card pad hidden" style="border-color:#5c4a2b">
+      ⏳ <b>Upload cooldown</b> until <span id="cooldown-until"></span>
+      (<span id="cooldown-reason"></span>) — uploads resume automatically.
+    </div>
     <div class="card">
       <div id="queue-list" class="queue-list"></div>
     </div>
@@ -204,6 +209,13 @@
         onchange="saveSettings()"><span>Notify subscribers on upload</span></label>
       <label class="switch-row"><input type="checkbox" id="set-kids"
         onchange="saveSettings()"><span>Mark as “made for kids”</span></label>
+      <div class="field-row">
+        <span>Max uploads per 24h</span>
+        <input id="set-daily" class="input xs" type="number" min="0" max="500"
+               onchange="saveSettings()">
+        <span class="muted">0 = no limit; stops before YouTube's own limit errors.
+          Used <span id="uploads-24h">0</span> in the last 24h.</span>
+      </div>
       <div class="field-row">
         <span>After verified upload</span>
         <select id="set-after" class="input" onchange="saveSettings()">

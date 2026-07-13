@@ -155,6 +155,27 @@ async function resetEditor() {
 }
 
 /* ------------------------------------------------------------- queue */
+async function startUploads() {
+  if (S && S.cooldown) {
+    if (!confirm(`Upload cooldown is active until ${S.cooldown} ` +
+                 `(${S.cooldown_reason}). Uploads resume automatically then.\n\n` +
+                 `Force-start now anyway?`)) return;
+    await api("/api/queue/start", { force: true });
+    return;
+  }
+  await api("/api/queue/start", {});
+}
+function renderCooldown() {
+  const banner = el("cooldown-banner");
+  if (S.cooldown) {
+    el("cooldown-until").textContent = S.cooldown;
+    el("cooldown-reason").textContent = S.cooldown_reason || "limit";
+    banner.classList.remove("hidden");
+  } else {
+    banner.classList.add("hidden");
+  }
+  el("uploads-24h").textContent = S.uploads_last_24h ?? 0;
+}
 function renderQueue() {
   const box = el("queue-list");
   box.innerHTML = "";
@@ -285,8 +306,9 @@ async function connectYouTube() {
 
 /* ---------------------------------------------------------- settings */
 function renderSettings() {
-  if (["set-template", "client-id", "client-secret", "folder-input"]
+  if (["set-template", "client-id", "client-secret", "folder-input", "set-daily"]
       .includes(document.activeElement?.id)) return;
+  el("set-daily").value = S.cfg.daily_upload_limit ?? 0;
   el("set-privacy").value = S.cfg.privacy;
   el("set-category").value = String(S.cfg.category_id || "20");
   el("set-template").value = S.cfg.title_template;
@@ -306,6 +328,7 @@ function saveSettings() {
     notify_subscribers: el("set-notify").checked,
     made_for_kids: el("set-kids").checked,
     after_upload: el("set-after").value,
+    daily_upload_limit: parseInt(el("set-daily").value) || 0,
   });
 }
 
@@ -338,6 +361,7 @@ async function refresh() {
   } catch (e) { return; }
   el("version").textContent = "v" + S.version;
   renderAuth();
+  renderCooldown();
   renderAutomation();
   renderSettings();
   const vodsJson = JSON.stringify(S.vods);
