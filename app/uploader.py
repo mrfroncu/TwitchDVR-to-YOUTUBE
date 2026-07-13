@@ -41,6 +41,8 @@ class QueueItem:
     recording_date: str | None
     notify_subscribers: bool
     made_for_kids: bool
+    # None, or {"type": "id"|"name", "value": ..., "title": optional display}
+    playlist: dict | None = None
     status: str = "queued"      # queued | uploading | done | error | cancelled
     detail: str = ""
     video_id: str | None = None
@@ -106,6 +108,7 @@ class UploadWorker(threading.Thread):
         self._chunk_bytes -= self._chunk_bytes % (256 * 1024)
         self.pause_requested = threading.Event()   # finish current item, then stop
         self.cancel_current = threading.Event()    # abort the in-flight item
+        self._playlists_cache: list[dict] | None = None
 
     # ------------------------------------------------------------------ api --
     def run(self) -> None:
@@ -141,6 +144,7 @@ class UploadWorker(threading.Thread):
                                      verified=True)
                     self._emit({"type": "log",
                                 "text": f"Uploaded and verified '{item.title}' -> {url} ({detail})"})
+                    self._handle_playlist(service, item)
                 elif ok is None:
                     self._set_status(item, "done",
                                      f"{url} — uploaded, verification unavailable ({detail})",
@@ -148,6 +152,7 @@ class UploadWorker(threading.Thread):
                     self._emit({"type": "log",
                                 "text": f"Uploaded '{item.title}' -> {url}, but could not "
                                         f"verify it: {detail}"})
+                    self._handle_playlist(service, item)
                 else:
                     self._set_status(item, "error", f"upload verification failed: {detail}")
                     self._emit({"type": "log",
@@ -269,6 +274,44 @@ class UploadWorker(threading.Thread):
                 raise UploadCancelled()
             time.sleep(0.2)
         return retry
+
+    def _handle_playlist(self, service, item: QueueItem) -> None:
+        """Add the uploaded video to its playlist (finding or creating it).
+
+        Failures are logged but never fail the queue item — the video is
+        already safely on YouTube at this point.
+        """
+        spec = item.playlist
+        if not spec or not item.video_id:
+            return
+        from . import playlists as pl
+        try:
+            if spec.get("type") == "id":
+                playlist_id = spec["value"]
+                title = spec.get("title") or playlist_id
+            else:
+                name = spec["value"]
+                if self._playlists_cache is None:
+                    self._playlists_cache = pl.list_playlists(service)
+                found = next((p for p in self._playlists_cache
+                              if p["title"].strip().lower() == name.strip().lower()),
+                             None)
+                if found is None:
+                    privacy = "public" if item.privacy == "public" else "unlisted"
+                    found = pl.create_playlist(service, name, privacy)
+                    self._playlists_cache.append(found)
+                    self._emit({"type": "log",
+                                "text": f"Created playlist '{found['title']}' ({privacy})"})
+                playlist_id, title = found["id"], found["title"]
+            pl.add_to_playlist(service, playlist_id, item.video_id)
+            item.detail += f" · playlist: {title}"
+            self._emit({"type": "item_detail", "key": item.key, "detail": item.detail})
+            self._emit({"type": "log",
+                        "text": f"Added '{item.title}' to playlist '{title}'"})
+        except Exception as exc:
+            self._emit({"type": "log",
+                        "text": f"Could not add '{item.title}' to a playlist: "
+                                f"{str(exc)[:250]}"})
 
     def _verify_with_retry(self, service, video_id: str) -> tuple[bool | None, str]:
         """(True/False, detail) from verify_video; (None, error) if the check

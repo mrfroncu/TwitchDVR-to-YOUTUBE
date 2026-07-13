@@ -27,7 +27,7 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=datas,
-    hiddenimports=[],
+    hiddenimports=["pywinstyles"] if sys.platform == "win32" else [],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

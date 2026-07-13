@@ -20,7 +20,17 @@ Twitch VOD recordings to YouTube — sequentially, with all the stream metadata 
   VOD folder — to the Recycle Bin, automatically (Settings → "After verified upload") or
   manually via the bulk "🗑 Recycle local files" button. Files are never touched unless
   YouTube confirmed the video exists, and they go to the Recycle Bin, not permanent deletion.
-- Modern Fluent-style UI (Sun Valley theme) with dark and light mode (Settings → Appearance)
+- Modern Fluent-style UI (Sun Valley theme) with dark and light mode (Settings → Appearance),
+  animated upload progress, and a theme-matched title bar
+- **Automation tab**: watch the VOD folder in the background — rescan on an interval,
+  auto-queue new ready VODs with generated metadata, and auto-start uploads
+- **Playlists tab**: browse/create channel playlists and set a default rule for uploads —
+  a fixed playlist, or auto-created by name template (e.g. `{streamer} VODs {year}`);
+  per-video override in the editor and as a bulk action. Videos are added right after
+  upload verification.
+
+> **Updating from an older version?** The playlist features need an extra Google permission,
+> so the app will ask you to **sign in again once**.
 
 ## Requirements
 

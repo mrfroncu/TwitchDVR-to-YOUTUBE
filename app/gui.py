@@ -6,12 +6,13 @@ import queue
 import subprocess
 import sys
 import threading
+import time
 import tkinter as tk
 from datetime import datetime, timezone
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from . import auth, config, scanner
+from . import auth, config, playlists, scanner
 from .scanner import Vod
 from .uploader import QueueItem, UploadWorker, verify_video
 from .version import __version__
@@ -82,6 +83,11 @@ class App:
         self.credentials = None
         self.channel: dict | None = None
         self._editing_key: str | None = None
+        self.playlists: list[dict] = []
+        self.playlist_ids: dict[str, str] = {}
+        self._prog_anim = {"active": False, "pct": 0.0, "pct_per_s": 0.0,
+                           "ts": 0.0, "shown": 0.0}
+        self._auto_countdown = int(self.cfg.get("auto_scan_interval_min", 10)) * 60
 
         root.title(f"TwitchDVR to YouTube Uploader  v{__version__}")
         root.geometry("1240x820")
@@ -93,12 +99,15 @@ class App:
         self.notebook.pack(fill="both", expand=True, padx=6, pady=(6, 0))
         self._build_videos_tab()
         self._build_queue_tab()
+        self._build_automation_tab()
+        self._build_playlists_tab()
         self._build_settings_tab()
         self._build_status_bar()
         self._apply_theme(self.cfg.get("theme", "dark"))
 
         root.protocol("WM_DELETE_WINDOW", self._on_close)
         root.after(POLL_MS, self._poll_events)
+        root.after(1000, self._auto_tick)
 
         # Try silent sign-in with the saved token
         if config.TOKEN_PATH.exists():
@@ -116,13 +125,15 @@ class App:
             sv_ttk.set_theme(theme)
         style = ttk.Style()
         style.configure("Muted.TLabel", foreground=self.colors["muted"])
-        for tree in (self.video_tree, self.queue_tree):
+        odd_bg = "#242424" if theme == "dark" else "#f3f3f3"
+        for tree in (self.video_tree, self.queue_tree, self.playlist_tree):
             tree.tag_configure("uploaded", foreground=self.colors["ok"])
             tree.tag_configure("done", foreground=self.colors["ok"])
             tree.tag_configure("problem", foreground=self.colors["err"])
             tree.tag_configure("error", foreground=self.colors["err"])
             tree.tag_configure("uploading", foreground=self.colors["info"])
-        for txt in (self.desc_text, self.log_text):
+            tree.tag_configure("odd_row", background=odd_bg)
+        for txt in (self.desc_text, self.log_text, self.auto_log_text):
             txt.configure(bg=self.colors["field_bg"], fg=self.colors["fg"],
                           insertbackground=self.colors["fg"],
                           relief="flat", highlightthickness=0)
@@ -133,14 +144,28 @@ class App:
         if sys.platform != "win32":
             return
         try:
-            from ctypes import byref, c_int, windll
-            self.root.update_idletasks()
-            hwnd = windll.user32.GetParent(self.root.winfo_id())
-            # DWMWA_USE_IMMERSIVE_DARK_MODE
-            windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, byref(c_int(int(dark))), 4)
-            # nudge a repaint so the title bar updates immediately
-            self.root.attributes("-alpha", 0.99)
-            self.root.attributes("-alpha", 1.0)
+            # Preferred: exact caption color matching the theme (Windows 11)
+            import pywinstyles
+            pywinstyles.change_header_color(
+                self.root, "#1c1c1c" if dark else "#fafafa")
+            pywinstyles.change_title_color(
+                self.root, "#fafafa" if dark else "#1c1c1c")
+        except Exception:
+            try:
+                from ctypes import byref, c_int, windll
+                self.root.update_idletasks()
+                hwnd = windll.user32.GetParent(self.root.winfo_id())
+                # DWMWA_USE_IMMERSIVE_DARK_MODE (Windows 10 fallback)
+                windll.dwmapi.DwmSetWindowAttribute(hwnd, 20,
+                                                    byref(c_int(int(dark))), 4)
+            except Exception:
+                pass
+        try:
+            # nudge a repaint so the title bar updates immediately (skip while
+            # the startup fade-in owns the alpha channel)
+            if float(self.root.attributes("-alpha")) >= 0.99:
+                self.root.attributes("-alpha", 0.99)
+                self.root.attributes("-alpha", 1.0)
         except Exception:
             pass
 
@@ -153,7 +178,7 @@ class App:
     # ------------------------------------------------------------ videos tab --
     def _build_videos_tab(self) -> None:
         tab = ttk.Frame(self.notebook)
-        self.notebook.add(tab, text="  Videos  ")
+        self.notebook.add(tab, text=" 🎬 Videos ")
 
         top = ttk.Frame(tab)
         top.pack(fill="x", padx=8, pady=8)
@@ -215,6 +240,14 @@ class App:
                    command=self.bulk_recycle).pack(side="left", padx=4)
         ttk.Button(row2, text="Reset upload state",
                    command=self.bulk_reset_state).pack(side="left")
+        ttk.Label(row2, text="Playlist:").pack(side="left", padx=(10, 2))
+        self.bulk_playlist_var = tk.StringVar(value="(default)")
+        self.bulk_playlist_combo = ttk.Combobox(
+            row2, textvariable=self.bulk_playlist_var, width=22, state="readonly",
+            values=["(default)", "(none)"])
+        self.bulk_playlist_combo.pack(side="left")
+        ttk.Button(row2, text="Apply",
+                   command=self.bulk_apply_playlist).pack(side="left", padx=2)
 
         # ---- metadata editor
         editor = ttk.LabelFrame(tab, text="Video metadata (edit before queueing)")
@@ -240,6 +273,12 @@ class App:
         self.privacy_var = tk.StringVar(value=self.cfg["privacy"])
         ttk.Combobox(row2, textvariable=self.privacy_var, width=9, state="readonly",
                      values=("private", "unlisted", "public")).pack(side="left", padx=(4, 0))
+        ttk.Label(row2, text="Playlist:").pack(side="left", padx=(10, 0))
+        self.playlist_choice_var = tk.StringVar(value="(default)")
+        self.editor_playlist_combo = ttk.Combobox(
+            row2, textvariable=self.playlist_choice_var, width=22, state="readonly",
+            values=["(default)", "(none)"])
+        self.editor_playlist_combo.pack(side="left", padx=(4, 0))
 
         ttk.Label(editor, text="Description (chapter timestamps become YouTube chapters):"
                   ).pack(anchor="w", padx=6, pady=(4, 0))
@@ -261,7 +300,7 @@ class App:
     # ------------------------------------------------------------- queue tab --
     def _build_queue_tab(self) -> None:
         tab = ttk.Frame(self.notebook)
-        self.notebook.add(tab, text="  Queue & Progress  ")
+        self.notebook.add(tab, text=" 📤 Queue & Progress ")
 
         cols = ("check", "pos", "title", "size", "privacy", "status", "detail")
         self.queue_tree = ttk.Treeview(tab, columns=cols, show="headings",
@@ -315,10 +354,137 @@ class App:
         self.log_text.pack(side="left", fill="both", expand=True)
         lsb.pack(side="left", fill="y")
 
+    # -------------------------------------------------------- automation tab --
+    def _build_automation_tab(self) -> None:
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text=" 🤖 Automation ")
+
+        box = ttk.LabelFrame(tab, text="Background folder watching")
+        box.pack(fill="x", padx=10, pady=10)
+
+        self.auto_enabled_var = tk.BooleanVar(value=bool(self.cfg.get("auto_scan", False)))
+        ttk.Checkbutton(box, text="Watch the VOD folder and rescan automatically",
+                        variable=self.auto_enabled_var,
+                        command=self._automation_changed).pack(anchor="w", padx=8, pady=(8, 2))
+
+        row = ttk.Frame(box)
+        row.pack(fill="x", padx=8, pady=2)
+        ttk.Label(row, text="Scan every").pack(side="left")
+        self.auto_interval_var = tk.StringVar(
+            value=str(self.cfg.get("auto_scan_interval_min", 10)))
+        ttk.Spinbox(row, from_=1, to=1440, textvariable=self.auto_interval_var,
+                    width=5, command=self._automation_changed).pack(side="left", padx=4)
+        ttk.Label(row, text="minutes").pack(side="left")
+
+        self.auto_queue_var = tk.BooleanVar(value=bool(self.cfg.get("auto_queue", True)))
+        ttk.Checkbutton(box, text="Automatically queue new ready VODs "
+                                  "(with generated metadata and the default playlist rule)",
+                        variable=self.auto_queue_var, command=self._automation_changed
+                        ).pack(anchor="w", padx=8, pady=2)
+        self.auto_start_var = tk.BooleanVar(value=bool(self.cfg.get("auto_start", True)))
+        ttk.Checkbutton(box, text="Automatically start uploading when the queue has items",
+                        variable=self.auto_start_var, command=self._automation_changed
+                        ).pack(anchor="w", padx=8, pady=2)
+        self.auto_finalized_var = tk.BooleanVar(
+            value=bool(self.cfg.get("auto_only_finalized", True)))
+        ttk.Checkbutton(box, text="Skip raw .ts / not-finalized captures (recommended — "
+                                  "they may still be recording)",
+                        variable=self.auto_finalized_var, command=self._automation_changed
+                        ).pack(anchor="w", padx=8, pady=(2, 8))
+
+        row = ttk.Frame(box)
+        row.pack(fill="x", padx=8, pady=(0, 8))
+        self.auto_status_label = ttk.Label(row, text="Automation is off.")
+        self.auto_status_label.pack(side="left")
+        ttk.Button(row, text="Run a scan cycle now", command=self._auto_cycle
+                   ).pack(side="right")
+
+        ttk.Label(tab, text="Automation activity:").pack(anchor="w", padx=10)
+        frame = ttk.Frame(tab)
+        frame.pack(fill="both", expand=True, padx=10, pady=(2, 10))
+        self.auto_log_text = tk.Text(frame, height=10, wrap="word", state="disabled")
+        sb = ttk.Scrollbar(frame, orient="vertical", command=self.auto_log_text.yview)
+        self.auto_log_text.configure(yscrollcommand=sb.set)
+        self.auto_log_text.pack(side="left", fill="both", expand=True)
+        sb.pack(side="left", fill="y")
+
+    def _automation_changed(self) -> None:
+        self.cfg["auto_scan"] = bool(self.auto_enabled_var.get())
+        try:
+            self.cfg["auto_scan_interval_min"] = max(1, int(self.auto_interval_var.get()))
+        except ValueError:
+            pass
+        self.cfg["auto_queue"] = bool(self.auto_queue_var.get())
+        self.cfg["auto_start"] = bool(self.auto_start_var.get())
+        self.cfg["auto_only_finalized"] = bool(self.auto_finalized_var.get())
+        config.save_config(self.cfg)
+        self._auto_countdown = self.cfg["auto_scan_interval_min"] * 60
+        if self.cfg["auto_scan"]:
+            self._auto_log("Automation enabled — scanning every "
+                           f"{self.cfg['auto_scan_interval_min']} min.")
+        else:
+            self.auto_status_label.configure(text="Automation is off.")
+            self._auto_log("Automation disabled.")
+
+    def _auto_tick(self) -> None:
+        try:
+            if self.cfg.get("auto_scan") and self.folder_var.get().strip():
+                self._auto_countdown -= 1
+                if self._auto_countdown <= 0:
+                    self._auto_countdown = max(
+                        60, int(self.cfg.get("auto_scan_interval_min", 10)) * 60)
+                    self._auto_cycle()
+                mins, secs = divmod(max(0, self._auto_countdown), 60)
+                self.auto_status_label.configure(
+                    text=f"Automation is ON — next scan in {mins}:{secs:02d}")
+        finally:
+            self.root.after(1000, self._auto_tick)
+
+    def _auto_cycle(self) -> None:
+        folder = self.folder_var.get().strip()
+        if not folder:
+            self._auto_log("No VOD folder configured — nothing to scan.")
+            return
+        before = set(self.vods)
+        self.scan_folder()
+        new = [k for k in self.vods if k not in before]
+        if new:
+            self._auto_log(f"Found {len(new)} new VOD folder(s).")
+        queued = {i.key for i in self.queue_items
+                  if i.status in ("queued", "uploading", "verifying", "done")}
+        candidates = []
+        for key, vod in self.vods.items():
+            if key in self.registry or key in queued or vod.video_path is None:
+                continue
+            if self.cfg.get("auto_only_finalized", True) and vod.problems:
+                continue
+            candidates.append(key)
+        if candidates and self.cfg.get("auto_queue", True):
+            self._auto_log(f"Auto-queueing {len(candidates)} VOD(s).")
+            self._enqueue(candidates)
+        if self.cfg.get("auto_start", True) and \
+                any(i.status == "queued" for i in self.queue_items) and \
+                not (self.worker and self.worker.is_alive()):
+            if self.credentials is None:
+                self.credentials = auth.load_credentials()
+            if self.credentials is None:
+                self._auto_log("Queue has items, but not signed in — cannot auto-start.")
+            else:
+                self._auto_log("Auto-starting uploads.")
+                self.start_uploads()
+
+    def _auto_log(self, text: str) -> None:
+        stamp = datetime.now().strftime("%H:%M:%S")
+        self.auto_log_text.configure(state="normal")
+        self.auto_log_text.insert("end", f"[{stamp}] {text}\n")
+        self.auto_log_text.see("end")
+        self.auto_log_text.configure(state="disabled")
+        self._log(text)
+
     # ---------------------------------------------------------- settings tab --
     def _build_settings_tab(self) -> None:
         tab = ttk.Frame(self.notebook)
-        self.notebook.add(tab, text="  Settings  ")
+        self.notebook.add(tab, text=" ⚙ Settings ")
 
         looks = ttk.LabelFrame(tab, text="Appearance")
         looks.pack(fill="x", padx=10, pady=(10, 0))
@@ -484,6 +650,7 @@ class App:
             "description": scanner.build_description(vod),
             "tags": ", ".join(scanner.build_tags(vod)),
             "privacy": self.cfg["privacy"],
+            "playlist_choice": "(default)",
         }
 
     def _video_status(self, vod: Vod) -> tuple[str, str]:
@@ -507,14 +674,15 @@ class App:
     def _refresh_video_tree(self) -> None:
         selected = set(self.video_tree.selection())
         self.video_tree.delete(*self.video_tree.get_children())
-        for vod in self.vods.values():
+        for i, vod in enumerate(self.vods.values()):
             status, tag = self._video_status(vod)
             dur = ""
             if vod.duration:
                 h, rem = divmod(int(vod.duration), 3600)
                 dur = f"{h}:{rem // 60:02d}:{rem % 60:02d}"
+            tags = tuple(t for t in (tag, "odd_row" if i % 2 else None) if t)
             self.video_tree.insert(
-                "", "end", iid=vod.key, tags=(tag,) if tag else (),
+                "", "end", iid=vod.key, tags=tags,
                 values=(CHECKED if vod.key in self.video_checked else UNCHECKED,
                         vod.date_str, vod.streamer_name or vod.streamer_login,
                         vod.stream_title, dur,
@@ -656,6 +824,186 @@ class App:
         self._refresh_video_tree()
         self._log(f"Reset upload state of {len(keys)} video(s) — they can be queued again.")
 
+    def bulk_apply_playlist(self) -> None:
+        choice = self.bulk_playlist_var.get() or "(default)"
+        keys = self._checked_video_keys()
+        for key in keys:
+            self.metas[key]["playlist_choice"] = choice
+        if self._editing_key in keys:
+            self.playlist_choice_var.set(choice)
+        self._log(f"Set playlist '{choice}' on {len(keys)} video(s).")
+
+    # --------------------------------------------------------------- playlists --
+    def _playlist_choices(self) -> list[str]:
+        return ["(default)", "(none)"] + [p["title"] for p in self.playlists]
+
+    def _update_playlist_choices(self) -> None:
+        values = self._playlist_choices()
+        self.editor_playlist_combo.configure(values=values)
+        self.bulk_playlist_combo.configure(values=values)
+        self.pl_fixed_combo.configure(values=[p["title"] for p in self.playlists])
+
+    def _resolve_playlist_spec(self, key: str) -> dict | None:
+        """What playlist (if any) an enqueued video should end up in."""
+        choice = self.metas.get(key, {}).get("playlist_choice", "(default)")
+        if choice == "(none)":
+            return None
+        if choice != "(default)":
+            pid = self.playlist_ids.get(choice)
+            if pid:
+                return {"type": "id", "value": pid, "title": choice}
+            return {"type": "name", "value": choice}
+        mode = self.cfg.get("playlist_mode", "none")
+        if mode == "fixed" and self.cfg.get("playlist_fixed_id"):
+            return {"type": "id", "value": self.cfg["playlist_fixed_id"],
+                    "title": self.cfg.get("playlist_fixed_title", "")}
+        if mode == "template":
+            name = self._render_playlist_name(self.vods.get(key))
+            if name:
+                return {"type": "name", "value": name}
+        return None
+
+    def _render_playlist_name(self, vod: Vod | None) -> str:
+        if vod is None:
+            return ""
+        template = self.cfg.get("playlist_template") or "{streamer} VODs"
+
+        class _Safe(dict):
+            def __missing__(self, k):
+                return "{" + k + "}"
+
+        values = _Safe(
+            streamer=vod.streamer_name or vod.streamer_login,
+            login=vod.streamer_login,
+            game=vod.games[0] if vod.games else "",
+            games=", ".join(vod.games),
+            title=vod.stream_title,
+            date=vod.date_str,
+            year=vod.started_at.strftime("%Y") if vod.started_at else "",
+            month=vod.started_at.strftime("%m") if vod.started_at else "",
+        )
+        try:
+            return template.format_map(values).strip()[:150]
+        except (ValueError, IndexError):
+            return ""
+
+    def _build_playlists_tab(self) -> None:
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text=" 📃 Playlists ")
+
+        top = ttk.Frame(tab)
+        top.pack(fill="x", padx=10, pady=(10, 4))
+        ttk.Button(top, text="⟳ Refresh playlists", command=self.refresh_playlists
+                   ).pack(side="left")
+        ttk.Label(top, text="New playlist:").pack(side="left", padx=(16, 2))
+        self.new_pl_var = tk.StringVar()
+        ttk.Entry(top, textvariable=self.new_pl_var, width=32).pack(side="left", padx=4)
+        self.new_pl_privacy = tk.StringVar(value="unlisted")
+        ttk.Combobox(top, textvariable=self.new_pl_privacy, width=9, state="readonly",
+                     values=("private", "unlisted", "public")).pack(side="left")
+        ttk.Button(top, text="Create", style="Accent.TButton",
+                   command=self.create_playlist_clicked).pack(side="left", padx=6)
+
+        cols = ("title", "count", "privacy", "id")
+        self.playlist_tree = ttk.Treeview(tab, columns=cols, show="headings", height=10)
+        for col, (text, width, anchor) in {
+                "title": ("Title", 400, "w"), "count": ("Videos", 70, "center"),
+                "privacy": ("Privacy", 90, "center"),
+                "id": ("Playlist ID", 320, "w")}.items():
+            self.playlist_tree.heading(col, text=text)
+            self.playlist_tree.column(col, width=width, anchor=anchor)
+        self.playlist_tree.pack(fill="both", expand=True, padx=10, pady=4)
+
+        rule = ttk.LabelFrame(
+            tab, text="Default playlist for uploads (per-video override on the Videos tab)")
+        rule.pack(fill="x", padx=10, pady=(4, 10))
+        self.pl_mode_var = tk.StringVar(value=self.cfg.get("playlist_mode", "none"))
+        row = ttk.Frame(rule)
+        row.pack(fill="x", padx=8, pady=(6, 0))
+        ttk.Radiobutton(row, text="Don't add uploads to any playlist",
+                        variable=self.pl_mode_var, value="none",
+                        command=self._playlist_rule_changed).pack(anchor="w")
+        row = ttk.Frame(rule)
+        row.pack(fill="x", padx=8)
+        ttk.Radiobutton(row, text="Always add to:", variable=self.pl_mode_var,
+                        value="fixed", command=self._playlist_rule_changed).pack(side="left")
+        self.pl_fixed_var = tk.StringVar(value=self.cfg.get("playlist_fixed_title", ""))
+        self.pl_fixed_combo = ttk.Combobox(row, textvariable=self.pl_fixed_var,
+                                           width=36, state="readonly", values=[])
+        self.pl_fixed_combo.pack(side="left", padx=6)
+        self.pl_fixed_combo.bind("<<ComboboxSelected>>",
+                                 lambda _e: self._playlist_rule_changed())
+        row = ttk.Frame(rule)
+        row.pack(fill="x", padx=8, pady=(0, 2))
+        ttk.Radiobutton(row, text="Auto-create by name:", variable=self.pl_mode_var,
+                        value="template", command=self._playlist_rule_changed
+                        ).pack(side="left")
+        self.pl_template_var = tk.StringVar(
+            value=self.cfg.get("playlist_template", "{streamer} VODs {year}"))
+        template_entry = ttk.Entry(row, textvariable=self.pl_template_var, width=42)
+        template_entry.pack(side="left", padx=6)
+        template_entry.bind("<FocusOut>", lambda _e: self._playlist_rule_changed())
+        ttk.Label(rule,
+                  text="Placeholders: {streamer} {login} {game} {games} {year} {month} "
+                       "{date} {title}. Missing playlists are created on demand "
+                       "(create = 50 quota units, adding a video = 50 units).",
+                  style="Muted.TLabel", wraplength=1000, justify="left"
+                  ).pack(anchor="w", padx=8, pady=(2, 8))
+
+    def _playlist_rule_changed(self) -> None:
+        self.cfg["playlist_mode"] = self.pl_mode_var.get()
+        title = self.pl_fixed_var.get()
+        self.cfg["playlist_fixed_title"] = title
+        if title in self.playlist_ids:
+            self.cfg["playlist_fixed_id"] = self.playlist_ids[title]
+        self.cfg["playlist_template"] = self.pl_template_var.get()
+        config.save_config(self.cfg)
+
+    def refresh_playlists(self) -> None:
+        if self.credentials is None:
+            self.credentials = auth.load_credentials()
+        if self.credentials is None:
+            messagebox.showwarning("Playlists", "Not signed in to YouTube.")
+            return
+        creds = self.credentials
+
+        def worker():
+            try:
+                service = auth.build_service(creds)
+                items = playlists.list_playlists(service)
+                self.events.put({"type": "playlists", "items": items})
+            except Exception as exc:
+                self.events.put({"type": "log",
+                                 "text": "Could not load playlists: "
+                                         + auth.describe_api_error(exc)})
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def create_playlist_clicked(self) -> None:
+        title = self.new_pl_var.get().strip()
+        if not title:
+            return
+        if self.credentials is None:
+            messagebox.showwarning("Playlists", "Not signed in to YouTube.")
+            return
+        creds, privacy = self.credentials, self.new_pl_privacy.get()
+        self.new_pl_var.set("")
+
+        def worker():
+            try:
+                service = auth.build_service(creds)
+                playlists.create_playlist(service, title, privacy)
+                self.events.put({"type": "log",
+                                 "text": f"Created playlist '{title}' ({privacy})"})
+                self.events.put({"type": "playlists",
+                                 "items": playlists.list_playlists(service)})
+            except Exception as exc:
+                self.events.put({"type": "log",
+                                 "text": "Could not create playlist: "
+                                         + auth.describe_api_error(exc)})
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def _recycle_vod(self, key: str, mode: str) -> bool:
         if send2trash is None:
             self._log("Recycle unavailable: the 'Send2Trash' package is not "
@@ -699,6 +1047,7 @@ class App:
         self.title_var.set(meta["title"])
         self.tags_var.set(meta["tags"])
         self.privacy_var.set(meta["privacy"])
+        self.playlist_choice_var.set(meta.get("playlist_choice", "(default)"))
         self.desc_text.delete("1.0", "end")
         self.desc_text.insert("1.0", meta["description"])
         self._editing_key = key
@@ -710,6 +1059,7 @@ class App:
         meta["title"] = scanner.sanitize_title(self.title_var.get())
         meta["tags"] = self.tags_var.get().strip()
         meta["privacy"] = self.privacy_var.get()
+        meta["playlist_choice"] = self.playlist_choice_var.get() or "(default)"
         meta["description"] = self.desc_text.get("1.0", "end-1c")
 
     def _update_title_count(self) -> None:
@@ -760,6 +1110,7 @@ class App:
                 recording_date=scanner.recording_date(vod),
                 notify_subscribers=bool(self.cfg.get("notify_subscribers", False)),
                 made_for_kids=bool(self.cfg.get("made_for_kids", False)),
+                playlist=self._resolve_playlist_spec(key),
             ))
             added += 1
         self._refresh_queue_tree()
@@ -777,8 +1128,9 @@ class App:
             if item.status == "uploading" and item.progress:
                 detail = f"{item.progress:.1f}%  {item.detail}"
             tag = item.status if item.status in ("done", "error", "uploading") else ""
+            tags = tuple(t for t in (tag, "odd_row" if idx % 2 == 0 else None) if t)
             self.queue_tree.insert(
-                "", "end", iid=item.key, tags=(tag,) if tag else (),
+                "", "end", iid=item.key, tags=tags,
                 values=(CHECKED if item.key in self.queue_checked else UNCHECKED,
                         idx, item.title, fmt_size(item.vod.size_bytes),
                         item.privacy, item.status, detail))
@@ -862,7 +1214,7 @@ class App:
         if self.credentials is None:
             messagebox.showwarning(
                 "Upload", "Not signed in to YouTube.\nGo to Settings → Sign in with Google.")
-            self.notebook.select(2)
+            self.notebook.select(4)
             return
         # reset stuck error items? leave them; only 'queued' get uploaded
         try:
@@ -933,8 +1285,10 @@ class App:
     def _restore_session(self) -> None:
         creds = auth.load_credentials()
         if creds is None:
-            self.events.put({"type": "auth_err",
-                             "error": "saved session expired — sign in again"})
+            self.events.put({"type": "auth_err", "quiet": True,
+                             "error": "Saved session can't be reused (expired, or the "
+                                      "app needs new permissions such as playlists). "
+                                      "Sign in again via Settings."})
             return
         self.events.put(self._channel_lookup_event(creds))
 
@@ -954,7 +1308,24 @@ class App:
                 self._handle_event(ev)
         except queue.Empty:
             pass
+        self._animate_progress()
         self.root.after(POLL_MS, self._poll_events)
+
+    def _animate_progress(self) -> None:
+        """Move the progress bar smoothly between (sparse) chunk reports by
+        extrapolating from the last known position and speed."""
+        pa = self._prog_anim
+        if not pa["active"]:
+            return
+        elapsed = time.monotonic() - pa["ts"]
+        predicted = min(pa["pct"] + pa["pct_per_s"] * elapsed, 99.7)
+        if predicted > pa["shown"]:
+            pa["shown"] += (predicted - pa["shown"]) * 0.25
+            self.progressbar.configure(value=pa["shown"])
+
+    def _reset_progress_anim(self) -> None:
+        self._prog_anim.update(active=False, pct=0.0, pct_per_s=0.0, shown=0.0)
+        self.progressbar.configure(value=0)
 
     def _handle_event(self, ev: dict) -> None:
         etype = ev.get("type")
@@ -971,7 +1342,7 @@ class App:
                     "verified": verified,
                 }
                 config.save_registry(self.registry)
-                self.progressbar.configure(value=0)
+                self._reset_progress_anim()
                 self.current_label.configure(text="Idle.")
                 mode = self.cfg.get("after_upload", "keep")
                 if verified and mode != "keep":
@@ -979,7 +1350,7 @@ class App:
                         self._refresh_video_tree()
             if item and ev["status"] == "uploading":
                 self.current_label.configure(text=f"Uploading: {item.title}")
-                self.progressbar.configure(value=0)
+                self._reset_progress_anim()
             if item and ev["status"] == "verifying":
                 self.current_label.configure(text=f"Verifying on YouTube: {item.title}")
             self._refresh_queue_tree()
@@ -1002,17 +1373,35 @@ class App:
                 item.progress = ev["pct"]
                 item.detail = f"{fmt_speed(ev['speed_bps'])}, ETA {fmt_eta(ev['eta_s'])}" \
                     if ev["speed_bps"] else ""
-                self.progressbar.configure(value=ev["pct"])
+                size = item.vod.size_bytes or 1
+                self._prog_anim.update(
+                    active=True, pct=ev["pct"], ts=time.monotonic(),
+                    pct_per_s=(ev["speed_bps"] / size * 100.0) if ev["speed_bps"] else 0.0)
                 self.current_label.configure(
                     text=f"Uploading: {item.title} — {ev['pct']:.1f}%"
                          + (f" @ {fmt_speed(ev['speed_bps'])}, ETA {fmt_eta(ev['eta_s'])}"
                             if ev["speed_bps"] else ""))
                 self._update_queue_row(item)
+        elif etype == "playlists":
+            self.playlists = ev["items"]
+            self.playlist_ids = {p["title"]: p["id"] for p in self.playlists}
+            self.playlist_tree.delete(*self.playlist_tree.get_children())
+            for i, p in enumerate(self.playlists):
+                self.playlist_tree.insert(
+                    "", "end", tags=("odd_row",) if i % 2 else (),
+                    values=(p["title"], p["count"], p["privacy"], p["id"]))
+            self._update_playlist_choices()
+            self._log(f"Loaded {len(self.playlists)} playlist(s) from the channel.")
+        elif etype == "item_detail":
+            item = self._item_by_key(ev["key"])
+            if item:
+                item.detail = ev["detail"]
+                self._refresh_queue_tree()
         elif etype == "worker_done":
             self.start_btn.configure(state="normal")
             self.pause_btn.configure(state="disabled")
             self.cancel_btn.configure(state="disabled")
-            self.progressbar.configure(value=0)
+            self._reset_progress_anim()
             reason = ev.get("reason")
             self.current_label.configure(
                 text={"finished": "Queue finished.", "paused": "Paused.",
@@ -1038,11 +1427,17 @@ class App:
                 self.account_label.configure(text=f"Signed in — channel: {name}")
                 self.status_channel.configure(text=f"YouTube channel: {name}")
                 self._log(f"Signed in. Uploading as channel: {name}")
+                self.refresh_playlists()
         elif etype == "auth_err":
             self.signin_btn.configure(state="normal")
-            self.account_label.configure(text="Not signed in.")
             self._log(f"Sign-in problem: {ev['error']}")
-            messagebox.showerror("Sign in failed", ev["error"])
+            if ev.get("quiet"):
+                # startup restore failure: inform without an error popup
+                self.account_label.configure(text="Sign in again (see log).")
+                self.status_channel.configure(text="Sign in required")
+            else:
+                self.account_label.configure(text="Not signed in.")
+                messagebox.showerror("Sign in failed", ev["error"])
 
     def _item_by_key(self, key: str):
         for item in self.queue_items:
@@ -1114,5 +1509,17 @@ def main() -> None:
         windll.shcore.SetProcessDpiAwareness(1)  # crisp text on HiDPI
     except Exception:
         pass
+    root.attributes("-alpha", 0.0)   # start invisible, fade in below
     App(root)
+
+    def fade_in(step: int = 0) -> None:
+        alpha = min(1.0, step / 12)
+        try:
+            root.attributes("-alpha", alpha)
+        except tk.TclError:
+            return
+        if alpha < 1.0:
+            root.after(16, fade_in, step + 1)
+
+    fade_in()
     root.mainloop()
