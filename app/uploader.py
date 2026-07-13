@@ -131,11 +131,14 @@ def verify_video(service, video_id: str) -> tuple[bool, str]:
 
 
 class UploadWorker(threading.Thread):
-    def __init__(self, credentials, items: list[QueueItem], events):
+    def __init__(self, credentials, items: list[QueueItem], events,
+                 daily_limit: int = 0, count_recent=None):
         super().__init__(daemon=True, name="upload-worker")
         self._credentials = credentials
         self._items = items
         self._events = events
+        self._daily_limit = max(0, int(daily_limit))
+        self._count_recent = count_recent   # callable -> uploads in last ~24h
         self._session: AuthorizedSession | None = None
         self.pause_requested = threading.Event()   # finish current item, then stop
         self.cancel_current = threading.Event()    # abort the in-flight item
@@ -153,6 +156,7 @@ class UploadWorker(threading.Thread):
             self._emit({"type": "worker_done", "reason": "error"})
             return
 
+        detail = ""
         while True:
             if self.pause_requested.is_set():
                 reason = "paused"
@@ -162,6 +166,14 @@ class UploadWorker(threading.Thread):
             item = next((i for i in self._items if i.status == "queued"), None)
             if item is None:
                 reason = "finished"
+                break
+            if self._daily_limit and self._count_recent and \
+                    self._count_recent() >= self._daily_limit:
+                reason = "daily_limit"
+                self._emit({"type": "log",
+                            "text": f"Configured daily upload limit "
+                                    f"({self._daily_limit}/24h) reached — "
+                                    "stopping before YouTube complains."})
                 break
             self.cancel_current.clear()
             self._set_status(item, "uploading", "starting…")
@@ -192,17 +204,23 @@ class UploadWorker(threading.Thread):
             except UploadCancelled:
                 self._set_status(item, "cancelled", "cancelled by user")
             except QuotaExceeded as exc:
-                self._set_status(item, "queued", "waiting (quota)")
-                self._emit({"type": "log", "text": (
-                    f"YouTube API quota exhausted: {exc}. Uploads cost 1600 units each and the "
-                    "default daily quota is 10,000 (~6 uploads/day). Quota resets at midnight "
-                    "Pacific time — press Start again after that.")})
+                detail = str(exc)
+                self._set_status(item, "queued", "waiting (limit)")
+                if "uploadLimitExceeded" in detail:
+                    text = ("YouTube says the channel exceeded its upload limit "
+                            "(rolling ~24h window). The queue keeps the video and "
+                            "will retry after the cooldown.")
+                else:
+                    text = (f"YouTube API quota exhausted ({detail}). Uploads cost "
+                            "1600 units each, default daily quota is 10,000. It "
+                            "resets at midnight Pacific time.")
+                self._emit({"type": "log", "text": text})
                 reason = "quota"
                 break
             except Exception as exc:
                 self._set_status(item, "error", str(exc)[:300])
                 self._emit({"type": "log", "text": f"Upload failed for '{item.title}': {exc}"})
-        self._emit({"type": "worker_done", "reason": reason})
+        self._emit({"type": "worker_done", "reason": reason, "detail": detail})
 
     # ------------------------------------------------------------- internals --
     def _upload_one(self, service, item: QueueItem) -> str:
@@ -247,8 +265,10 @@ class UploadWorker(threading.Thread):
                     reasons.add(detail["reason"])
         except ValueError:
             pass
-        if resp.status_code == 403 and reasons & QUOTA_REASONS:
-            raise QuotaExceeded(", ".join(sorted(reasons)) or "403")
+        # uploadLimitExceeded arrives as HTTP 400, quotaExceeded as 403 —
+        # treat quota-family reasons the same regardless of status code.
+        if reasons & QUOTA_REASONS:
+            raise QuotaExceeded(", ".join(sorted(reasons & QUOTA_REASONS)))
         raise UploadHttpError(resp.status_code, resp.text or "")
 
     def _committed_offset(self, session_uri: str, total: int):

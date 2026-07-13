@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from . import auth, config, playlists, scanner
+from . import auth, config, limits, playlists, scanner
 from .scanner import Vod
 from .uploader import QueueItem, UploadWorker, verify_video
 from .version import __version__
@@ -403,6 +403,8 @@ class App:
         self.cancel_btn = ttk.Button(ctl, text="✖ Cancel current upload",
                                      command=self.cancel_current, state="disabled")
         self.cancel_btn.pack(side="left")
+        ttk.Button(ctl, text="↻ Retry failed", command=self.retry_failed
+                   ).pack(side="left", padx=6)
         ttk.Button(ctl, text="Remove checked/selected", command=self.remove_queue_item
                    ).pack(side="right")
         ttk.Button(ctl, text="▼", width=3, command=lambda: self.move_queue_item(1)
@@ -500,8 +502,29 @@ class App:
             self.auto_status_label.configure(text="Automation is off.")
             self._auto_log("Automation disabled.")
 
+    def _cooldown_tick(self) -> None:
+        """Show the active cooldown and auto-resume the queue when it ends."""
+        if not self.cfg.get("cooldown_until"):
+            return
+        cooldown = limits.get_cooldown(self.cfg)
+        idle = not (self.worker and self.worker.is_alive())
+        if cooldown is None:                       # just expired
+            limits.set_cooldown(self.cfg, None)
+            config.save_config(self.cfg)
+            if idle and any(i.status == "queued" for i in self.queue_items):
+                if self.credentials is None:
+                    self.credentials = auth.load_credentials()
+                if self.credentials is not None:
+                    self._log("Upload cooldown finished — resuming the queue.")
+                    self.start_uploads()
+        elif idle:
+            self.current_label.configure(
+                text=f"⏳ Cooldown until {limits.fmt_local(cooldown)} "
+                     f"({self.cfg.get('cooldown_reason', '')}) — resumes automatically.")
+
     def _auto_tick(self) -> None:
         try:
+            self._cooldown_tick()
             if self.cfg.get("auto_scan") and self.folder_var.get().strip():
                 self._auto_countdown -= 1
                 if self._auto_countdown <= 0:
@@ -539,6 +562,10 @@ class App:
         if self.cfg.get("auto_start", True) and \
                 any(i.status == "queued" for i in self.queue_items) and \
                 not (self.worker and self.worker.is_alive()):
+            if limits.get_cooldown(self.cfg) is not None:
+                self._auto_log("Queue has items, but an upload cooldown is active "
+                               f"until {limits.fmt_local(limits.get_cooldown(self.cfg))}.")
+                return
             if self.credentials is None:
                 self.credentials = auth.load_credentials()
             if self.credentials is None:
@@ -652,6 +679,12 @@ class App:
         self.kids_var = tk.BooleanVar(value=bool(self.cfg.get("made_for_kids", False)))
         ttk.Checkbutton(row, text="Mark as “made for kids”",
                         variable=self.kids_var).pack(side="left", padx=14)
+        ttk.Label(row, text="Max uploads per 24h:").pack(side="left", padx=(14, 0))
+        self.daily_limit_var = tk.StringVar(
+            value=str(self.cfg.get("daily_upload_limit", 0)))
+        ttk.Entry(row, textvariable=self.daily_limit_var, width=5).pack(side="left", padx=4)
+        ttk.Label(row, text="(0 = no limit; stops before YouTube errors)",
+                  style="Muted.TLabel").pack(side="left")
 
         ttk.Button(tab, text="Save settings", command=self.save_settings
                    ).pack(anchor="e", padx=10)
@@ -1284,7 +1317,21 @@ class App:
                 "Upload", "Not signed in to YouTube.\nGo to Settings → Sign in with Google.")
             self.notebook.select(4)
             return
-        self.worker = UploadWorker(self.credentials, self.queue_items, self.events)
+        cooldown = limits.get_cooldown(self.cfg)
+        if cooldown is not None:
+            if not messagebox.askyesno(
+                    "Upload cooldown",
+                    f"YouTube upload limit hit earlier "
+                    f"({self.cfg.get('cooldown_reason') or 'limit'}).\n"
+                    f"Cooldown until {limits.fmt_local(cooldown)} — uploads will "
+                    "resume automatically then.\n\nStart anyway now?"):
+                return
+            limits.set_cooldown(self.cfg, None)
+            config.save_config(self.cfg)
+        self.worker = UploadWorker(
+            self.credentials, self.queue_items, self.events,
+            daily_limit=int(self.cfg.get("daily_upload_limit", 0) or 0),
+            count_recent=lambda: limits.count_recent(self.registry))
         self.worker.start()
         self.start_btn.configure(state="disabled")
         self.pause_btn.configure(state="normal")
@@ -1301,6 +1348,22 @@ class App:
         if self.worker:
             self.worker.cancel_current.set()
             self._log("Cancelling current upload…")
+
+    def retry_failed(self) -> None:
+        count = 0
+        for item in self.queue_items:
+            if item.status in ("error", "cancelled"):
+                item.status = "queued"
+                item.detail = ""
+                item.progress = 0.0
+                count += 1
+        if count:
+            self._refresh_queue_tree()
+            self._refresh_video_tree()
+            self._log(f"Re-queued {count} failed upload(s). Press Start "
+                      "(or let automation pick them up).")
+        else:
+            self._log("No failed uploads in the queue.")
 
     # ------------------------------------------------------------------ auth --
     def sign_in(self) -> None:
@@ -1465,13 +1528,28 @@ class App:
             self.cancel_btn.configure(state="disabled")
             self._reset_progress_anim()
             reason = ev.get("reason")
-            self.current_label.configure(
-                text={"finished": "Queue finished.", "paused": "Paused.",
-                      "quota": "Stopped: daily API quota exhausted."}.get(reason, "Idle."))
             if reason == "quota":
-                messagebox.showwarning(
-                    "Quota", "YouTube API daily quota is exhausted.\n"
-                    "It resets at midnight Pacific time — press Start again after that.")
+                until = limits.quota_cooldown(ev.get("detail", ""))
+                limits.set_cooldown(self.cfg, until, ev.get("detail", "limit"))
+                config.save_config(self.cfg)
+                self.current_label.configure(
+                    text=f"⏳ Upload limit hit — cooling down until "
+                         f"{limits.fmt_local(until)}, resumes automatically.")
+                self._log(f"Cooldown until {limits.fmt_local(until)} "
+                          f"({ev.get('detail', '')}). Uploads resume automatically.")
+            elif reason == "daily_limit":
+                until = limits.next_slot(self.registry,
+                                         int(self.cfg.get("daily_upload_limit", 0) or 0))
+                limits.set_cooldown(self.cfg, until, "daily upload limit")
+                config.save_config(self.cfg)
+                self.current_label.configure(
+                    text=f"⏳ Daily limit reached — next upload at "
+                         f"{limits.fmt_local(until)}, resumes automatically.")
+                self._log(f"Daily limit reached; next slot at {limits.fmt_local(until)}.")
+            else:
+                self.current_label.configure(
+                    text={"finished": "Queue finished.",
+                          "paused": "Paused."}.get(reason, "Idle."))
         elif etype == "auth_ok":
             self.credentials = ev["creds"]
             self.channel = ev.get("channel")
@@ -1535,6 +1613,10 @@ class App:
         self.cfg["made_for_kids"] = bool(self.kids_var.get())
         self.cfg["after_upload"] = config.AFTER_UPLOAD_CHOICES.get(
             self.after_upload_var.get(), "keep")
+        try:
+            self.cfg["daily_upload_limit"] = max(0, int(self.daily_limit_var.get()))
+        except ValueError:
+            pass
         config.save_config(self.cfg)
         if not silent:
             self._log("Settings saved.")

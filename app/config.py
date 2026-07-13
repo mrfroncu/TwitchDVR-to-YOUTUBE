@@ -51,6 +51,10 @@ DEFAULTS = {
     "playlist_fixed_id": "",
     "playlist_fixed_title": "",
     "playlist_template": "{streamer} VODs {year}",
+    # Rate limiting
+    "daily_upload_limit": 0,        # 0 = unlimited; stop before YouTube errors
+    "cooldown_until": "",           # ISO timestamp while YouTube said "no more"
+    "cooldown_reason": "",
     # Web/Docker mode: OAuth client of type "TVs and Limited Input devices"
     "client_id": "",
     "client_secret": "",

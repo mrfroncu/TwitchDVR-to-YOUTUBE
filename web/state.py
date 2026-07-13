@@ -14,7 +14,7 @@ from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app import auth, config, playlists, scanner
+from app import auth, config, limits, playlists, scanner
 from app.scanner import Vod
 from app.uploader import QueueItem, UploadWorker, verify_video
 from app.version import __version__
@@ -318,21 +318,45 @@ class Controller:
             self.queue_items = [i for i in self.queue_items
                                 if i.status not in ("done", "cancelled")]
 
-    def start_uploads(self) -> None:
+    def start_uploads(self, force: bool = False) -> None:
         if self.worker and self.worker.is_alive():
             return
         if not any(i.status == "queued" for i in self.queue_items):
             raise RuntimeError("queue is empty")
         if self.credentials is None:
             raise RuntimeError("not signed in to YouTube")
+        cooldown = limits.get_cooldown(self.cfg)
+        if cooldown is not None:
+            if not force:
+                raise RuntimeError(
+                    f"upload cooldown until {limits.fmt_local(cooldown)} "
+                    f"({self.cfg.get('cooldown_reason', 'limit')}) — uploads "
+                    "resume automatically, or force-start to override")
+            limits.set_cooldown(self.cfg, None)
+            config.save_config(self.cfg)
         import queue as _q
         self.worker_events = _q.Queue()
-        self.worker = UploadWorker(self.credentials, self.queue_items,
-                                   self.worker_events)
+        self.worker = UploadWorker(
+            self.credentials, self.queue_items, self.worker_events,
+            daily_limit=int(self.cfg.get("daily_upload_limit", 0) or 0),
+            count_recent=lambda: limits.count_recent(self.registry))
         self.worker.start()
         threading.Thread(target=self._pump_worker,
                          args=(self.worker_events,), daemon=True).start()
         self.log("Upload queue started.")
+
+    def retry_failed(self) -> int:
+        count = 0
+        with self.lock:
+            for item in self.queue_items:
+                if item.status in ("error", "cancelled"):
+                    item.status = "queued"
+                    item.detail = ""
+                    item.progress = 0.0
+                    count += 1
+        self.log(f"Re-queued {count} failed upload(s)." if count
+                 else "No failed uploads in the queue.")
+        return count
 
     def pause_uploads(self) -> None:
         if self.worker:
@@ -380,10 +404,26 @@ class Controller:
                                                f"ETA {int(ev['eta_s'])}s")
             elif etype == "worker_done":
                 reason = ev.get("reason", "")
-                self.log({"finished": "Queue finished.",
-                          "paused": "Queue paused.",
-                          "quota": "Stopped: daily API quota exhausted "
-                                   "(resets midnight Pacific)."}.get(reason, "Idle."))
+                if reason == "quota":
+                    until = limits.quota_cooldown(ev.get("detail", ""))
+                    with self.lock:
+                        limits.set_cooldown(self.cfg, until,
+                                            ev.get("detail", "limit"))
+                        config.save_config(self.cfg)
+                    self.log(f"Cooldown until {limits.fmt_local(until)} — "
+                             "uploads resume automatically.")
+                elif reason == "daily_limit":
+                    until = limits.next_slot(
+                        self.registry,
+                        int(self.cfg.get("daily_upload_limit", 0) or 0))
+                    with self.lock:
+                        limits.set_cooldown(self.cfg, until, "daily upload limit")
+                        config.save_config(self.cfg)
+                    self.log(f"Daily limit reached — next upload at "
+                             f"{limits.fmt_local(until)} (automatic).")
+                else:
+                    self.log({"finished": "Queue finished.",
+                              "paused": "Queue paused."}.get(reason, "Idle."))
 
     # ---------------------------------------------------------- housekeeping
     def _dispose_vod(self, key: str, mode: str) -> bool:
@@ -488,6 +528,7 @@ class Controller:
         while True:
             time.sleep(1)
             try:
+                self._cooldown_tick()
                 if not self.cfg.get("auto_scan"):
                     self.auto_status = "off"
                     continue
@@ -500,6 +541,24 @@ class Controller:
                     self.auto_cycle()
             except Exception as exc:
                 self.log(f"Automation error: {exc}")
+
+    def _cooldown_tick(self) -> None:
+        """Auto-resume the queue once a stored cooldown expires."""
+        if not self.cfg.get("cooldown_until"):
+            return
+        if limits.get_cooldown(self.cfg) is not None:
+            return
+        with self.lock:
+            limits.set_cooldown(self.cfg, None)
+            config.save_config(self.cfg)
+        if any(i.status == "queued" for i in self.queue_items) and \
+                not (self.worker and self.worker.is_alive()) and \
+                self.credentials is not None:
+            self.log("Upload cooldown finished — resuming the queue.")
+            try:
+                self.start_uploads()
+            except RuntimeError as exc:
+                self.log(f"Auto-resume failed: {exc}")
 
     def auto_cycle(self) -> None:
         before = set(self.vods)
@@ -525,7 +584,11 @@ class Controller:
         if self.cfg.get("auto_start", True) and \
                 any(i.status == "queued" for i in self.queue_items) and \
                 not (self.worker and self.worker.is_alive()):
-            if self.credentials is None:
+            cooldown = limits.get_cooldown(self.cfg)
+            if cooldown is not None:
+                self.log("Automation: waiting for the upload cooldown "
+                         f"(until {limits.fmt_local(cooldown)}).")
+            elif self.credentials is None:
                 self.log("Automation: queue has items but not signed in.")
             else:
                 self.log("Automation: starting uploads.")
@@ -554,8 +617,12 @@ class Controller:
                 "privacy": i.privacy, "status": i.status,
                 "detail": i.detail, "progress": round(i.progress, 1),
             } for i in self.queue_items]
+            cooldown = limits.get_cooldown(self.cfg)
             return {
                 "version": __version__,
+                "cooldown": limits.fmt_local(cooldown) if cooldown else None,
+                "cooldown_reason": self.cfg.get("cooldown_reason", ""),
+                "uploads_last_24h": limits.count_recent(self.registry),
                 "auth": {**self.auth_state,
                          "channel": self.channel["title"] if self.channel else None},
                 "cfg": {k: v for k, v in self.cfg.items() if k != "client_secret"},
