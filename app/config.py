@@ -13,6 +13,9 @@ APP_NAME = "TwitchDVR-to-YouTube"
 
 
 def _app_dir() -> Path:
+    override = os.environ.get("APP_DIR")   # set in Docker to the /config volume
+    if override:
+        return Path(override)
     if sys.platform == "win32":
         return Path(os.environ.get("APPDATA", str(Path.home()))) / APP_NAME
     if sys.platform == "darwin":
@@ -48,6 +51,9 @@ DEFAULTS = {
     "playlist_fixed_id": "",
     "playlist_fixed_title": "",
     "playlist_template": "{streamer} VODs {year}",
+    # Web/Docker mode: OAuth client of type "TVs and Limited Input devices"
+    "client_id": "",
+    "client_secret": "",
 }
 
 AFTER_UPLOAD_CHOICES = {

@@ -137,6 +137,52 @@ loop, which is known to cap out around 10 MB/s
 If the connection drops, the app asks the session how many bytes were committed and
 resumes from there, so nothing restarts from zero. There is nothing to configure.
 
+## Browser / Docker version (for servers)
+
+The same engine also runs headless with a modern web UI on **port 4091** — ideal for the
+machine that runs LiveStreamDVR itself.
+
+```bash
+cp docker-compose.yml.example docker-compose.yml   # then edit the volume paths!
+docker compose up -d --build
+```
+
+Open `http://<server>:4091`. Config, token and upload history live in the `./config`
+volume; your VOD library is mounted at `/vods`.
+
+**Signing in on a server** uses Google's device flow: create an OAuth client of type
+**“TVs and Limited Input devices”** in Google Cloud Console, paste its client ID/secret in
+the web Settings (or drop the `client_secret.json` into `./config`), press
+*Connect YouTube* and enter the shown code at <https://www.google.com/device> from any
+device.
+
+Notes:
+- `docker-compose.yml` is gitignored and excluded from deploys — your server copy with
+  real paths is never overwritten by updates.
+- The web UI has **no login** — run it on a private network or behind a reverse proxy
+  with authentication.
+- Server mode has no recycle bin: the optional after-upload cleanup **deletes files
+  permanently** (still only after YouTube confirmed the video exists).
+
+### Automatic deployment to your server
+
+The [Deploy workflow](.github/workflows/deploy.yml) runs on every push to `main`:
+it rsyncs the repo to your server over SSH (excluding `docker-compose.yml` and `config/`)
+and then runs `docker compose down && build && up -d`. It skips silently until you
+configure, under **Settings → Secrets and variables → Actions**:
+
+| Kind     | Name                  | Example              |
+|----------|-----------------------|----------------------|
+| Secret   | `DEPLOY_SSH_HOST`     | `203.0.113.10`       |
+| Secret   | `DEPLOY_SSH_USER`     | `matthew`            |
+| Secret   | `DEPLOY_SSH_PASSWORD` | *(the SSH password)* |
+| Secret   | `DEPLOY_SSH_PORT`     | `22` *(optional)*    |
+| Variable | `DEPLOY_PATH`         | `/opt/twitchdvr2yt`  |
+
+The server needs `docker` with the compose plugin, and the SSH user must be allowed to
+run it. On first deploy the workflow copies the example compose file if none exists —
+edit the volume paths afterwards.
+
 ## Building the exe / releases
 
 Every push to `main` triggers the [Build & Release workflow](.github/workflows/release.yml):

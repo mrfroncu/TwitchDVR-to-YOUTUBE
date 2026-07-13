@@ -1,0 +1,14 @@
+.git
+.github
+__pycache__
+*.pyc
+.venv
+venv
+build
+dist
+config
+docker-compose.yml
+client_secret*.json
+token.json
+*.spec
+README.md
