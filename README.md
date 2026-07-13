@@ -14,8 +14,13 @@ Twitch VOD recordings to YouTube — sequentially, with all the stream metadata 
 
 ## Requirements
 
-- Windows, Python 3.10+ (Tkinter included, which is the default python.org installer)
+- Windows. Either grab the standalone `TwitchDVR-to-YouTube.exe` from the
+  [Releases page](../../releases) (no Python needed), or run from source with
+  Python 3.10+ (Tkinter included in the default python.org installer)
 - A Google account with a YouTube channel
+
+> Windows SmartScreen may warn about the unsigned exe on first run —
+> click **More info → Run anyway**.
 
 ## Setup
 
@@ -86,6 +91,21 @@ Status column) and can be uploaded — YouTube accepts MPEG-TS.
   visibility in YouTube Studio after upload.
 - While the consent screen is in *Testing* mode, refresh tokens expire after ~7 days —
   you'll just be asked to sign in again.
+
+## Building the exe / releases
+
+Every push to `main` triggers the [Build & Release workflow](.github/workflows/release.yml):
+it builds a single-file windowed exe with PyInstaller on a Windows runner and publishes a
+GitHub release tagged `v1.0.<build number>` with the exe attached and auto-generated notes.
+
+To build locally:
+
+```
+pip install pyinstaller
+pyinstaller TwitchDVR-to-YouTube.spec --noconfirm
+```
+
+Output: `dist\TwitchDVR-to-YouTube.exe`.
 
 ## Where the app stores its data
 

@@ -12,6 +12,7 @@ from tkinter import filedialog, messagebox, ttk
 from . import auth, config, scanner
 from .scanner import Vod
 from .uploader import QueueItem, UploadWorker
+from .version import __version__
 
 POLL_MS = 100
 
@@ -52,7 +53,7 @@ class App:
         self.channel: dict | None = None
         self._editing_key: str | None = None
 
-        root.title("TwitchDVR to YouTube Uploader")
+        root.title(f"TwitchDVR to YouTube Uploader  v{__version__}")
         root.geometry("1050x780")
         root.minsize(860, 620)
 
