@@ -35,7 +35,6 @@ DEFAULTS = {
     "title_template": "{title} | {streamer} VOD {date}",
     "notify_subscribers": False,
     "made_for_kids": False,
-    "chunk_mb": 64,
     "after_upload": "keep",         # keep | trash_video | trash_folder
     "theme": "dark",                # dark | light
     # Automation
@@ -76,13 +75,6 @@ def load_config() -> dict:
             cfg.update(json.load(f))
     except (OSError, ValueError):
         pass
-    # Migration: the old default chunk size (8 MB) throttles fast connections
-    # badly (one HTTPS round-trip per chunk). Bump configs still on it.
-    try:
-        if int(cfg.get("chunk_mb", 64)) <= 8:
-            cfg["chunk_mb"] = 64
-    except (TypeError, ValueError):
-        cfg["chunk_mb"] = 64
     return cfg
 
 

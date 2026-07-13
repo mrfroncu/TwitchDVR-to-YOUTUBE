@@ -20,8 +20,8 @@ Twitch VOD recordings to YouTube — sequentially, with all the stream metadata 
   VOD folder — to the Recycle Bin, automatically (Settings → "After verified upload") or
   manually via the bulk "🗑 Recycle local files" button. Files are never touched unless
   YouTube confirmed the video exists, and they go to the Recycle Bin, not permanent deletion.
-- Modern Fluent-style UI (Sun Valley theme) with dark and light mode (Settings → Appearance),
-  animated upload progress, and a theme-matched title bar
+- Modern Fluent-inspired UI with dark and light mode (Settings → Appearance), animated
+  upload progress, and a theme-matched title bar — drawn natively, so it stays responsive
 - **Automation tab**: watch the VOD folder in the background — rescan on an interval,
   auto-queue new ready VODs with generated metadata, and auto-start uploads
 - **Playlists tab**: browse/create channel playlists and set a default rule for uploads —
@@ -38,7 +38,7 @@ Twitch VOD recordings to YouTube — sequentially, with all the stream metadata 
   (no Python needed):
   - `TwitchDVR-to-YouTube.exe` — Windows, single file, just run it
   - `TwitchDVR-to-YouTube-macos-arm64.dmg` — macOS on Apple Silicon
-  - `TwitchDVR-to-YouTube-macos-intel.dmg` — macOS on Intel (when available)
+    (Intel Macs: run from source)
 
   …or run from source on any OS (including Linux) with Python 3.10+
   (Tkinter is included in the default python.org installer).
@@ -129,10 +129,13 @@ Status column) and can be uploaded — YouTube accepts MPEG-TS.
 
 ## Upload speed
 
-Uploads are chunked; every chunk is one HTTPS request, so the chunk size caps throughput.
-The default is 64 MB. On fast connections (≥500 Mbps) raise it to 128–256 MB in Settings
-for near-browser speeds; on unstable connections lower it (a failed chunk is what gets
-retried). Each chunk is held in RAM while it's sent.
+Uploads stream the whole file as **one continuous request** on a Google resumable-upload
+session — the same approach browsers use — instead of the Google Python client's chunked
+loop, which is known to cap out around 10 MB/s
+([google-api-python-client#625](https://github.com/googleapis/google-api-python-client/issues/625),
+[#793](https://github.com/googleapis/google-api-python-client/issues/793)).
+If the connection drops, the app asks the session how many bytes were committed and
+resumes from there, so nothing restarts from zero. There is nothing to configure.
 
 ## Building the exe / releases
 
