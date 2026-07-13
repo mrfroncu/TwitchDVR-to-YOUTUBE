@@ -59,6 +59,30 @@ class UploadCancelled(Exception):
     pass
 
 
+def verify_video(service, video_id: str) -> tuple[bool, str]:
+    """Check on YouTube that an uploaded video exists and is not failed/rejected.
+
+    Returns (ok, detail). Costs 1 API quota unit.
+    """
+    resp = service.videos().list(part="status,processingDetails",
+                                 id=video_id).execute()
+    items = resp.get("items") or []
+    if not items:
+        return False, "video not found on YouTube"
+    status = items[0].get("status", {})
+    upload_status = status.get("uploadStatus", "")
+    if upload_status == "processed":
+        return True, "processed"
+    if upload_status == "uploaded":
+        proc = (items[0].get("processingDetails") or {}).get("processingStatus", "")
+        return True, "uploaded, still processing" + (f" ({proc})" if proc else "")
+    reason = status.get("failureReason") or status.get("rejectionReason") or ""
+    detail = f"uploadStatus={upload_status or 'unknown'}"
+    if reason:
+        detail += f", reason={reason}"
+    return False, detail
+
+
 def _http_error_reasons(err: HttpError) -> set[str]:
     reasons: set[str] = set()
     try:
@@ -109,9 +133,25 @@ class UploadWorker(threading.Thread):
             try:
                 video_id = self._upload_one(service, item)
                 item.video_id = video_id
-                self._set_status(item, "done", f"https://youtu.be/{video_id}")
-                self._emit({"type": "log",
-                            "text": f"Uploaded '{item.title}' -> https://youtu.be/{video_id}"})
+                self._set_status(item, "verifying", "confirming video on YouTube…")
+                ok, detail = self._verify_with_retry(service, video_id)
+                url = f"https://youtu.be/{video_id}"
+                if ok is True:
+                    self._set_status(item, "done", f"{url} — verified ({detail})",
+                                     verified=True)
+                    self._emit({"type": "log",
+                                "text": f"Uploaded and verified '{item.title}' -> {url} ({detail})"})
+                elif ok is None:
+                    self._set_status(item, "done",
+                                     f"{url} — uploaded, verification unavailable ({detail})",
+                                     verified=False)
+                    self._emit({"type": "log",
+                                "text": f"Uploaded '{item.title}' -> {url}, but could not "
+                                        f"verify it: {detail}"})
+                else:
+                    self._set_status(item, "error", f"upload verification failed: {detail}")
+                    self._emit({"type": "log",
+                                "text": f"Verification FAILED for '{item.title}' ({url}): {detail}"})
             except UploadCancelled:
                 self._set_status(item, "cancelled", "cancelled by user")
             except QuotaExceeded as exc:
@@ -230,11 +270,28 @@ class UploadWorker(threading.Thread):
             time.sleep(0.2)
         return retry
 
-    def _set_status(self, item: QueueItem, status: str, detail: str) -> None:
+    def _verify_with_retry(self, service, video_id: str) -> tuple[bool | None, str]:
+        """(True/False, detail) from verify_video; (None, error) if the check
+        itself kept failing (network/quota) — the upload still succeeded."""
+        last = ""
+        for attempt in range(3):
+            try:
+                return verify_video(service, video_id)
+            except Exception as exc:
+                last = str(exc)[:200]
+                if attempt < 2:
+                    time.sleep(3)
+        return None, last
+
+    def _set_status(self, item: QueueItem, status: str, detail: str,
+                    verified: bool | None = None) -> None:
         item.status = status
         item.detail = detail
-        self._emit({"type": "item_status", "key": item.key,
-                    "status": status, "detail": detail})
+        event = {"type": "item_status", "key": item.key,
+                 "status": status, "detail": detail, "video_id": item.video_id}
+        if verified is not None:
+            event["verified"] = verified
+        self._emit(event)
 
     def _emit(self, event: dict) -> None:
         self._events.put(event)

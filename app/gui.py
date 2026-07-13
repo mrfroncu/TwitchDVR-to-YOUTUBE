@@ -13,8 +13,15 @@ from tkinter import filedialog, messagebox, ttk
 
 from . import auth, config, scanner
 from .scanner import Vod
-from .uploader import QueueItem, UploadWorker
+from .uploader import QueueItem, UploadWorker, verify_video
 from .version import __version__
+
+try:
+    from send2trash import send2trash
+except ImportError:      # running from source without the dependency
+    send2trash = None
+
+CHECKED, UNCHECKED = "☑", "☐"
 
 POLL_MS = 100
 
@@ -100,25 +107,55 @@ class App:
         ttk.Button(top, text="Browse…", command=self.pick_folder).pack(side="left")
         ttk.Button(top, text="Scan", command=self.scan_folder).pack(side="left", padx=(6, 0))
 
-        cols = ("date", "streamer", "title", "duration", "size", "chapters", "status")
+        cols = ("check", "date", "streamer", "title", "duration", "size",
+                "chapters", "status")
         self.video_tree = ttk.Treeview(tab, columns=cols, show="headings",
                                        selectmode="extended", height=10)
-        headings = {"date": ("Date", 90), "streamer": ("Streamer", 100),
-                    "title": ("Stream title", 330), "duration": ("Length", 70),
+        headings = {"check": (UNCHECKED, 36), "date": ("Date", 90),
+                    "streamer": ("Streamer", 100),
+                    "title": ("Stream title", 300), "duration": ("Length", 70),
                     "size": ("Size", 80), "chapters": ("Chapters", 70),
-                    "status": ("Status", 140)}
+                    "status": ("Status", 150)}
         for col, (text, width) in headings.items():
             self.video_tree.heading(col, text=text)
             self.video_tree.column(col, width=width,
                                    anchor="center" if col not in ("title",) else "w")
+        self.video_tree.heading("check", command=self._toggle_all_videos)
+        self.video_checked: set[str] = set()
         vsb = ttk.Scrollbar(tab, orient="vertical", command=self.video_tree.yview)
         self.video_tree.configure(yscrollcommand=vsb.set)
         self.video_tree.pack(side="top", fill="both", expand=False, padx=(8, 0))
         vsb.place(in_=self.video_tree, relx=1.0, rely=0, relheight=1.0, anchor="ne")
+        self.video_tree.bind("<Button-1>", self._on_video_tree_click)
         self.video_tree.bind("<<TreeviewSelect>>", self._on_video_select)
         self.video_tree.bind("<Double-1>", self._open_vod_folder)
         self.video_tree.tag_configure("uploaded", foreground="#2e7d32")
         self.video_tree.tag_configure("problem", foreground="#b71c1c")
+
+        # ---- bulk actions on checked rows
+        bulk = ttk.LabelFrame(tab, text="Bulk actions (apply to checked rows)")
+        bulk.pack(fill="x", padx=8, pady=(6, 0))
+        row = ttk.Frame(bulk)
+        row.pack(fill="x", padx=6, pady=6)
+        ttk.Button(row, text="Check all", width=9,
+                   command=lambda: self._set_all_videos_checked(True)).pack(side="left")
+        ttk.Button(row, text="None", width=6,
+                   command=lambda: self._set_all_videos_checked(False)).pack(
+            side="left", padx=(4, 10))
+        ttk.Button(row, text="Add to queue ▶",
+                   command=self.bulk_add_checked).pack(side="left")
+        ttk.Button(row, text="Reset metadata",
+                   command=self.bulk_reset_meta).pack(side="left", padx=4)
+        ttk.Label(row, text="Privacy:").pack(side="left", padx=(10, 2))
+        self.bulk_privacy_var = tk.StringVar(value=self.cfg["privacy"])
+        ttk.Combobox(row, textvariable=self.bulk_privacy_var, width=9, state="readonly",
+                     values=("private", "unlisted", "public")).pack(side="left")
+        ttk.Button(row, text="Apply",
+                   command=self.bulk_apply_privacy).pack(side="left", padx=(2, 10))
+        ttk.Button(row, text="Verify on YouTube",
+                   command=self.bulk_verify).pack(side="left")
+        ttk.Button(row, text="🗑 Recycle local files",
+                   command=self.bulk_recycle).pack(side="left", padx=4)
 
         # ---- metadata editor
         editor = ttk.LabelFrame(tab, text="Video metadata (edit before queueing)")
@@ -161,24 +198,26 @@ class App:
                    command=self._regenerate_selected).pack(side="left")
         ttk.Button(btns, text="Add selected to queue ▶",
                    command=self.add_selected_to_queue).pack(side="right")
-        ttk.Button(btns, text="Add ALL new to queue",
-                   command=self.add_all_to_queue).pack(side="right", padx=6)
 
     # ------------------------------------------------------------- queue tab --
     def _build_queue_tab(self) -> None:
         tab = ttk.Frame(self.notebook)
         self.notebook.add(tab, text="  Queue & Progress  ")
 
-        cols = ("pos", "title", "size", "privacy", "status", "detail")
+        cols = ("check", "pos", "title", "size", "privacy", "status", "detail")
         self.queue_tree = ttk.Treeview(tab, columns=cols, show="headings",
                                        selectmode="browse", height=12)
-        headings = {"pos": ("#", 40), "title": ("Title", 360), "size": ("Size", 85),
+        headings = {"check": (UNCHECKED, 36), "pos": ("#", 40),
+                    "title": ("Title", 330), "size": ("Size", 85),
                     "privacy": ("Privacy", 70), "status": ("Status", 90),
                     "detail": ("Progress / result", 280)}
         for col, (text, width) in headings.items():
             self.queue_tree.heading(col, text=text)
             self.queue_tree.column(col, width=width,
-                                   anchor="center" if col in ("pos", "size", "privacy", "status") else "w")
+                                   anchor="center" if col in ("check", "pos", "size", "privacy", "status") else "w")
+        self.queue_tree.heading("check", command=self._toggle_all_queue)
+        self.queue_checked: set[str] = set()
+        self.queue_tree.bind("<Button-1>", self._on_queue_tree_click)
         self.queue_tree.pack(fill="both", expand=True, padx=8, pady=(8, 4))
         self.queue_tree.tag_configure("done", foreground="#2e7d32")
         self.queue_tree.tag_configure("error", foreground="#b71c1c")
@@ -194,7 +233,7 @@ class App:
         self.cancel_btn = ttk.Button(ctl, text="✖ Cancel current upload",
                                      command=self.cancel_current, state="disabled")
         self.cancel_btn.pack(side="left")
-        ttk.Button(ctl, text="Remove selected", command=self.remove_queue_item
+        ttk.Button(ctl, text="Remove checked/selected", command=self.remove_queue_item
                    ).pack(side="right")
         ttk.Button(ctl, text="▼", width=3, command=lambda: self.move_queue_item(1)
                    ).pack(side="right", padx=(0, 6))
@@ -284,6 +323,20 @@ class App:
                   foreground="#555").pack(anchor="w", padx=8)
 
         row = ttk.Frame(up)
+        row.pack(fill="x", padx=8, pady=2)
+        ttk.Label(row, text="After verified upload:").pack(side="left")
+        inv_after = {v: k for k, v in config.AFTER_UPLOAD_CHOICES.items()}
+        self.after_upload_var = tk.StringVar(
+            value=inv_after.get(self.cfg.get("after_upload", "keep"),
+                                "Keep local files"))
+        ttk.Combobox(row, textvariable=self.after_upload_var, width=34,
+                     state="readonly",
+                     values=list(config.AFTER_UPLOAD_CHOICES)).pack(side="left", padx=6)
+        ttk.Label(row, text="(only after YouTube confirms the video exists; "
+                            "files go to the Recycle Bin)",
+                  foreground="#555").pack(side="left")
+
+        row = ttk.Frame(up)
         row.pack(fill="x", padx=8, pady=(6, 8))
         self.notify_var = tk.BooleanVar(value=bool(self.cfg.get("notify_subscribers", False)))
         ttk.Checkbutton(row, text="Notify subscribers on upload",
@@ -342,6 +395,7 @@ class App:
         self._editing_key = None
         vods = scanner.scan_folder(root)
         self.vods = {v.key: v for v in vods}
+        self.video_checked &= set(self.vods)
         for key in list(self.metas):
             if key not in self.vods:
                 del self.metas[key]
@@ -363,10 +417,15 @@ class App:
 
     def _video_status(self, vod: Vod) -> tuple[str, str]:
         """(status text, tree tag)"""
-        if vod.key in self.registry:
-            return "uploaded ✓", "uploaded"
+        entry = self.registry.get(vod.key)
+        if entry:
+            if entry.get("local_deleted"):
+                return "uploaded ✓ · recycled", "uploaded"
+            if entry.get("verified"):
+                return "uploaded ✓ verified", "uploaded"
+            return "uploaded (unverified)", "uploaded"
         for item in self.queue_items:
-            if item.key == vod.key and item.status in ("queued", "uploading"):
+            if item.key == vod.key and item.status in ("queued", "uploading", "verifying"):
                 return item.status, ""
         if vod.problems:
             return ", ".join(vod.problems), "problem"
@@ -383,13 +442,151 @@ class App:
                 dur = f"{h}:{rem // 60:02d}:{rem % 60:02d}"
             self.video_tree.insert(
                 "", "end", iid=vod.key, tags=(tag,) if tag else (),
-                values=(vod.date_str, vod.streamer_name or vod.streamer_login,
+                values=(CHECKED if vod.key in self.video_checked else UNCHECKED,
+                        vod.date_str, vod.streamer_name or vod.streamer_login,
                         vod.stream_title, dur,
                         fmt_size(vod.size_bytes) if vod.size_bytes else "—",
                         len(vod.chapters), status))
         for iid in selected:
             if self.video_tree.exists(iid):
                 self.video_tree.selection_add(iid)
+
+    # ------------------------------------------------------------ checkboxes --
+    def _on_video_tree_click(self, event):
+        if self.video_tree.identify("region", event.x, event.y) == "cell" and \
+                self.video_tree.identify_column(event.x) == "#1":
+            key = self.video_tree.identify_row(event.y)
+            if key:
+                self.video_checked.symmetric_difference_update({key})
+                self.video_tree.set(
+                    key, "check",
+                    CHECKED if key in self.video_checked else UNCHECKED)
+            return "break"
+        return None
+
+    def _set_all_videos_checked(self, checked: bool) -> None:
+        self.video_checked = set(self.vods) if checked else set()
+        for key in self.video_tree.get_children():
+            self.video_tree.set(key, "check", CHECKED if checked else UNCHECKED)
+
+    def _toggle_all_videos(self) -> None:
+        self._set_all_videos_checked(len(self.video_checked) < len(self.vods))
+
+    def _checked_video_keys(self) -> list[str]:
+        return [k for k in self.video_tree.get_children() if k in self.video_checked]
+
+    # -------------------------------------------------------------- bulk ops --
+    def bulk_add_checked(self) -> None:
+        self._save_editor()
+        keys = self._checked_video_keys()
+        if not keys:
+            messagebox.showinfo("Bulk", "No rows checked — click the ☐ column first.")
+            return
+        self._enqueue(keys)
+
+    def bulk_reset_meta(self) -> None:
+        keys = self._checked_video_keys()
+        for key in keys:
+            self.metas[key] = self._generate_meta(self.vods[key])
+        if self._editing_key in keys:
+            self._editing_key = None
+            self._on_video_select()
+        self._log(f"Reset metadata for {len(keys)} video(s).")
+
+    def bulk_apply_privacy(self) -> None:
+        privacy = self.bulk_privacy_var.get()
+        keys = self._checked_video_keys()
+        for key in keys:
+            self.metas[key]["privacy"] = privacy
+        if self._editing_key in keys:
+            self.privacy_var.set(privacy)
+        self._log(f"Set privacy '{privacy}' on {len(keys)} video(s).")
+
+    def bulk_verify(self) -> None:
+        keys = [k for k in self._checked_video_keys()
+                if self.registry.get(k, {}).get("video_id")]
+        if not keys:
+            messagebox.showinfo(
+                "Verify", "None of the checked rows have been uploaded yet — "
+                "there is nothing to verify.")
+            return
+        if self.credentials is None:
+            self.credentials = auth.load_credentials()
+        if self.credentials is None:
+            messagebox.showwarning("Verify", "Not signed in to YouTube.")
+            return
+        creds = self.credentials
+        self._log(f"Verifying {len(keys)} upload(s) on YouTube…")
+
+        def worker():
+            try:
+                service = auth.build_service(creds)
+            except Exception as exc:
+                self.events.put({"type": "log", "text": f"Verify failed: {exc}"})
+                return
+            for key in keys:
+                video_id = self.registry[key]["video_id"]
+                try:
+                    ok, detail = verify_video(service, video_id)
+                except Exception as exc:
+                    ok, detail = None, str(exc)[:200]
+                self.events.put({"type": "verify_result", "key": key,
+                                 "ok": ok, "detail": detail,
+                                 "video_id": video_id})
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def bulk_recycle(self) -> None:
+        mode = self.cfg.get("after_upload", "keep")
+        if mode == "keep":
+            mode = "trash_video"   # manual action defaults to video file only
+        candidates = []
+        for key in self._checked_video_keys():
+            entry = self.registry.get(key)
+            if entry and entry.get("verified") and not entry.get("local_deleted"):
+                candidates.append(key)
+        if not candidates:
+            messagebox.showinfo(
+                "Recycle", "Nothing to recycle. Only checked videos that were "
+                "uploaded AND verified on YouTube can be recycled.\n"
+                "Use “Verify on YouTube” first if needed.")
+            return
+        what = "whole VOD folders" if mode == "trash_folder" else "video files"
+        if not messagebox.askyesno(
+                "Recycle", f"Move the {what} of {len(candidates)} verified "
+                "upload(s) to the Recycle Bin?"):
+            return
+        done = 0
+        for key in candidates:
+            if self._recycle_vod(key, mode):
+                done += 1
+        self._log(f"Recycled local files of {done} upload(s).")
+        self.scan_folder()
+
+    def _recycle_vod(self, key: str, mode: str) -> bool:
+        if send2trash is None:
+            self._log("Recycle unavailable: the 'Send2Trash' package is not "
+                      "installed (pip install Send2Trash).")
+            return False
+        vod = self.vods.get(key)
+        item = self._item_by_key(key)
+        if vod is None and item is not None:
+            vod = item.vod
+        if vod is None:
+            return False
+        target = vod.folder if mode == "trash_folder" else vod.video_path
+        if target is None or not target.exists():
+            return False
+        try:
+            send2trash(str(target))
+        except Exception as exc:
+            self._log(f"Could not recycle {target}: {exc}")
+            return False
+        entry = self.registry.setdefault(key, {})
+        entry["local_deleted"] = True
+        config.save_registry(self.registry)
+        self._log(f"Moved to Recycle Bin: {target}")
+        return True
 
     def _open_vod_folder(self, _event) -> None:
         sel = self.video_tree.selection()
@@ -442,14 +639,10 @@ class App:
         keys = [k for k in self.video_tree.selection() if k in self.vods]
         self._enqueue(keys)
 
-    def add_all_to_queue(self) -> None:
-        self._save_editor()
-        self._enqueue(list(self.vods))
-
     def _enqueue(self, keys: list[str]) -> None:
         added = skipped = 0
         queued_keys = {i.key for i in self.queue_items
-                       if i.status in ("queued", "uploading", "done")}
+                       if i.status in ("queued", "uploading", "verifying", "done")}
         for key in keys:
             vod = self.vods[key]
             if key in self.registry or key in queued_keys:
@@ -481,6 +674,7 @@ class App:
                   (f", skipped {skipped} (already uploaded/queued or unusable)." if skipped else "."))
 
     def _refresh_queue_tree(self) -> None:
+        self.queue_checked &= {i.key for i in self.queue_items}
         self.queue_tree.delete(*self.queue_tree.get_children())
         for idx, item in enumerate(self.queue_items, start=1):
             detail = item.detail
@@ -489,12 +683,32 @@ class App:
             tag = item.status if item.status in ("done", "error", "uploading") else ""
             self.queue_tree.insert(
                 "", "end", iid=item.key, tags=(tag,) if tag else (),
-                values=(idx, item.title, fmt_size(item.vod.size_bytes),
+                values=(CHECKED if item.key in self.queue_checked else UNCHECKED,
+                        idx, item.title, fmt_size(item.vod.size_bytes),
                         item.privacy, item.status, detail))
         pending = sum(1 for i in self.queue_items if i.status == "queued")
         done = sum(1 for i in self.queue_items if i.status == "done")
         self.status_queue.configure(
             text=f"Queue: {pending} pending, {done} done, {len(self.queue_items)} total")
+
+    def _on_queue_tree_click(self, event):
+        if self.queue_tree.identify("region", event.x, event.y) == "cell" and \
+                self.queue_tree.identify_column(event.x) == "#1":
+            key = self.queue_tree.identify_row(event.y)
+            if key:
+                self.queue_checked.symmetric_difference_update({key})
+                self.queue_tree.set(
+                    key, "check",
+                    CHECKED if key in self.queue_checked else UNCHECKED)
+            return "break"
+        return None
+
+    def _toggle_all_queue(self) -> None:
+        all_keys = {i.key for i in self.queue_items}
+        self.queue_checked = set() if self.queue_checked >= all_keys else all_keys
+        for key in self.queue_tree.get_children():
+            self.queue_tree.set(
+                key, "check", CHECKED if key in self.queue_checked else UNCHECKED)
 
     def _selected_queue_index(self) -> int | None:
         sel = self.queue_tree.selection()
@@ -506,14 +720,20 @@ class App:
         return None
 
     def remove_queue_item(self) -> None:
-        idx = self._selected_queue_index()
-        if idx is None:
-            return
-        if self.queue_items[idx].status == "uploading":
-            messagebox.showinfo("Queue", "That video is uploading — use "
-                                "“Cancel current upload” first.")
-            return
-        del self.queue_items[idx]
+        """Remove the checked items, or the selected one if none are checked."""
+        keys = set(self.queue_checked)
+        if not keys:
+            sel = self.queue_tree.selection()
+            if not sel:
+                return
+            keys = {sel[0]}
+        busy = [i for i in self.queue_items
+                if i.key in keys and i.status in ("uploading", "verifying")]
+        if busy:
+            messagebox.showinfo("Queue", "A checked video is currently uploading — "
+                                "use “Cancel current upload” first.")
+            keys -= {i.key for i in busy}
+        self.queue_items = [i for i in self.queue_items if i.key not in keys]
         self._refresh_queue_tree()
         self._refresh_video_tree()
 
@@ -647,18 +867,37 @@ class App:
         elif etype == "item_status":
             item = self._item_by_key(ev["key"])
             if item and ev["status"] == "done":
+                verified = bool(ev.get("verified"))
                 self.registry[item.key] = {
                     "video_id": item.video_id,
                     "title": item.title,
                     "uploaded_at": datetime.now(timezone.utc).isoformat(),
+                    "verified": verified,
                 }
                 config.save_registry(self.registry)
                 self.progressbar.configure(value=0)
                 self.current_label.configure(text="Idle.")
+                mode = self.cfg.get("after_upload", "keep")
+                if verified and mode != "keep":
+                    if self._recycle_vod(item.key, mode):
+                        self._refresh_video_tree()
             if item and ev["status"] == "uploading":
                 self.current_label.configure(text=f"Uploading: {item.title}")
                 self.progressbar.configure(value=0)
+            if item and ev["status"] == "verifying":
+                self.current_label.configure(text=f"Verifying on YouTube: {item.title}")
             self._refresh_queue_tree()
+            self._refresh_video_tree()
+        elif etype == "verify_result":
+            entry = self.registry.get(ev["key"])
+            if entry is not None:
+                if ev["ok"] is not None:
+                    entry["verified"] = bool(ev["ok"])
+                entry["verify_detail"] = ev["detail"]
+                config.save_registry(self.registry)
+            state = {True: "OK", False: "MISSING/FAILED", None: "check unavailable"}[ev["ok"]]
+            self._log(f"Verify {ev['key']} (https://youtu.be/{ev['video_id']}): "
+                      f"{state} — {ev['detail']}")
             self._refresh_video_tree()
         elif etype == "progress":
             item = self._item_by_key(ev["key"])
@@ -740,6 +979,8 @@ class App:
         self.cfg["title_template"] = self.template_var.get() or config.DEFAULTS["title_template"]
         self.cfg["notify_subscribers"] = bool(self.notify_var.get())
         self.cfg["made_for_kids"] = bool(self.kids_var.get())
+        self.cfg["after_upload"] = config.AFTER_UPLOAD_CHOICES.get(
+            self.after_upload_var.get(), "keep")
         try:
             self.cfg["chunk_mb"] = max(1, int(self.chunk_var.get()))
         except ValueError:

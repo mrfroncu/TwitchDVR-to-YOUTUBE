@@ -36,6 +36,13 @@ DEFAULTS = {
     "notify_subscribers": False,
     "made_for_kids": False,
     "chunk_mb": 8,
+    "after_upload": "keep",         # keep | trash_video | trash_folder
+}
+
+AFTER_UPLOAD_CHOICES = {
+    "Keep local files": "keep",
+    "Move video file to Recycle Bin": "trash_video",
+    "Move whole VOD folder to Recycle Bin": "trash_folder",
 }
 
 CATEGORIES = {

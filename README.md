@@ -11,6 +11,15 @@ Twitch VOD recordings to YouTube — sequentially, with all the stream metadata 
 - Editable per-video metadata, upload queue with reordering, progress/speed/ETA, resumable
   chunked uploads with automatic retry, and duplicate-upload protection (already-uploaded
   folders are remembered and skipped)
+- **Post-upload verification**: after each upload the app asks the YouTube API whether the
+  video actually exists and wasn't rejected/failed (shown as *verified* in the list; there is
+  also a bulk "Verify on YouTube" action)
+- **Checkboxes & bulk actions** in both lists: check rows (or click the ☐ column header for
+  all) and bulk add-to-queue, reset metadata, set privacy, verify, remove from queue
+- **Optional local cleanup**: after a *verified* upload, move the video file — or the whole
+  VOD folder — to the Recycle Bin, automatically (Settings → "After verified upload") or
+  manually via the bulk "🗑 Recycle local files" button. Files are never touched unless
+  YouTube confirmed the video exists, and they go to the Recycle Bin, not permanent deletion.
 
 ## Requirements
 
