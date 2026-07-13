@@ -16,7 +16,9 @@ from . import config
 
 SCOPES = [
     "https://www.googleapis.com/auth/youtube.upload",
-    "https://www.googleapis.com/auth/youtube.readonly",
+    # Full scope: needed for playlist management (create / add items);
+    # it also covers the read-only channel lookup.
+    "https://www.googleapis.com/auth/youtube",
 ]
 
 SUCCESS_MESSAGE = (
@@ -28,6 +30,15 @@ SUCCESS_MESSAGE = (
 def load_credentials() -> Credentials | None:
     """Returns saved credentials, refreshed if needed, else None."""
     if not config.TOKEN_PATH.exists():
+        return None
+    try:
+        import json
+        stored = set(json.loads(
+            config.TOKEN_PATH.read_text(encoding="utf-8")).get("scopes") or [])
+        if not set(SCOPES) <= stored:
+            # Token predates a scope addition (e.g. playlists) — force re-consent
+            return None
+    except (ValueError, OSError):
         return None
     try:
         creds = Credentials.from_authorized_user_file(str(config.TOKEN_PATH), SCOPES)

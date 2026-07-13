@@ -38,6 +38,17 @@ DEFAULTS = {
     "chunk_mb": 64,
     "after_upload": "keep",         # keep | trash_video | trash_folder
     "theme": "dark",                # dark | light
+    # Automation
+    "auto_scan": False,
+    "auto_scan_interval_min": 10,
+    "auto_queue": True,
+    "auto_start": True,
+    "auto_only_finalized": True,
+    # Playlists
+    "playlist_mode": "none",        # none | fixed | template
+    "playlist_fixed_id": "",
+    "playlist_fixed_title": "",
+    "playlist_template": "{streamer} VODs {year}",
 }
 
 AFTER_UPLOAD_CHOICES = {
