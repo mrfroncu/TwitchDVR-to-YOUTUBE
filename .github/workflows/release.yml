@@ -1,0 +1,64 @@
+name: Build & Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  build-release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Compute version
+        id: ver
+        shell: pwsh
+        run: |
+          $version = "1.0.${{ github.run_number }}"
+          "version=$version" >> $env:GITHUB_OUTPUT
+          Write-Host "Version: $version"
+
+      - name: Stamp version into app
+        shell: pwsh
+        run: |
+          @"
+          """App version (stamped by CI)."""
+          __version__ = "${{ steps.ver.outputs.version }}"
+          "@ | Set-Content -Path app/version.py -Encoding utf8
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Build single-file exe
+        run: pyinstaller TwitchDVR-to-YouTube.spec --noconfirm
+
+      - name: Verify exe was produced
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "dist/TwitchDVR-to-YouTube.exe")) {
+            Write-Error "dist/TwitchDVR-to-YouTube.exe not found"
+            exit 1
+          }
+          Get-Item dist/TwitchDVR-to-YouTube.exe | Format-List Name, Length
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          name: TwitchDVR-to-YouTube v${{ steps.ver.outputs.version }}
+          generate_release_notes: true
+          files: dist/TwitchDVR-to-YouTube.exe
