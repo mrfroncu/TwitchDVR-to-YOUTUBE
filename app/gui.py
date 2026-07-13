@@ -156,6 +156,8 @@ class App:
                    command=self.bulk_verify).pack(side="left")
         ttk.Button(row, text="🗑 Recycle local files",
                    command=self.bulk_recycle).pack(side="left", padx=4)
+        ttk.Button(row, text="Reset upload state",
+                   command=self.bulk_reset_state).pack(side="left")
 
         # ---- metadata editor
         editor = ttk.LabelFrame(tab, text="Video metadata (edit before queueing)")
@@ -345,8 +347,11 @@ class App:
         ttk.Checkbutton(row, text="Mark as “made for kids”",
                         variable=self.kids_var).pack(side="left", padx=14)
         ttk.Label(row, text="Upload chunk size (MB):").pack(side="left", padx=(14, 0))
-        self.chunk_var = tk.StringVar(value=str(self.cfg.get("chunk_mb", 8)))
+        self.chunk_var = tk.StringVar(value=str(self.cfg.get("chunk_mb", 64)))
         ttk.Entry(row, textvariable=self.chunk_var, width=5).pack(side="left", padx=4)
+        ttk.Label(row, text="(64–256 recommended on fast connections; each chunk "
+                            "is one request, so bigger = faster)",
+                  foreground="#555").pack(side="left")
 
         ttk.Button(tab, text="Save settings", command=self.save_settings
                    ).pack(anchor="e", padx=10)
@@ -419,6 +424,8 @@ class App:
         """(status text, tree tag)"""
         entry = self.registry.get(vod.key)
         if entry:
+            if entry.get("failed"):
+                return "failed on YouTube — requeue or reset", "problem"
             if entry.get("local_deleted"):
                 return "uploaded ✓ · recycled", "uploaded"
             if entry.get("verified"):
@@ -563,6 +570,26 @@ class App:
         self._log(f"Recycled local files of {done} upload(s).")
         self.scan_folder()
 
+    def bulk_reset_state(self) -> None:
+        """Forget the upload record of checked rows so they can be re-uploaded."""
+        keys = [k for k in self._checked_video_keys() if k in self.registry]
+        if not keys:
+            messagebox.showinfo(
+                "Reset", "None of the checked rows have an upload record to reset.")
+            return
+        if not messagebox.askyesno(
+                "Reset upload state",
+                f"Forget the upload record of {len(keys)} video(s)?\n\n"
+                "They will show as 'ready' again and can be re-uploaded. "
+                "Videos already on YouTube are NOT touched — this only clears "
+                "the app's own bookkeeping, so re-uploading may create duplicates."):
+            return
+        for key in keys:
+            del self.registry[key]
+        config.save_registry(self.registry)
+        self._refresh_video_tree()
+        self._log(f"Reset upload state of {len(keys)} video(s) — they can be queued again.")
+
     def _recycle_vod(self, key: str, mode: str) -> bool:
         if send2trash is None:
             self._log("Recycle unavailable: the 'Send2Trash' package is not "
@@ -645,7 +672,10 @@ class App:
                        if i.status in ("queued", "uploading", "verifying", "done")}
         for key in keys:
             vod = self.vods[key]
-            if key in self.registry or key in queued_keys:
+            entry = self.registry.get(key)
+            # A registry entry blocks re-upload unless that upload is known
+            # to have failed on YouTube's side.
+            if (entry and not entry.get("failed")) or key in queued_keys:
                 skipped += 1
                 continue
             if vod.video_path is None:
@@ -770,9 +800,9 @@ class App:
             return
         # reset stuck error items? leave them; only 'queued' get uploaded
         try:
-            chunk_mb = max(1, int(self.chunk_var.get()))
+            chunk_mb = max(1, min(1024, int(self.chunk_var.get())))
         except ValueError:
-            chunk_mb = 8
+            chunk_mb = 64
         self.worker = UploadWorker(self.credentials, self.queue_items,
                                    self.events, chunk_mb=chunk_mb)
         self.worker.start()
@@ -893,6 +923,7 @@ class App:
             if entry is not None:
                 if ev["ok"] is not None:
                     entry["verified"] = bool(ev["ok"])
+                    entry["failed"] = not ev["ok"]
                 entry["verify_detail"] = ev["detail"]
                 config.save_registry(self.registry)
             state = {True: "OK", False: "MISSING/FAILED", None: "check unavailable"}[ev["ok"]]

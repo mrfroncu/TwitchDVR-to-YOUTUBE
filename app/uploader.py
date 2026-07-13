@@ -96,12 +96,12 @@ def _http_error_reasons(err: HttpError) -> set[str]:
 
 
 class UploadWorker(threading.Thread):
-    def __init__(self, credentials, items: list[QueueItem], events, chunk_mb: int = 8):
+    def __init__(self, credentials, items: list[QueueItem], events, chunk_mb: int = 64):
         super().__init__(daemon=True, name="upload-worker")
         self._credentials = credentials
         self._items = items
         self._events = events
-        self._chunk_bytes = max(1, int(chunk_mb)) * 1024 * 1024
+        self._chunk_bytes = max(1, min(1024, int(chunk_mb))) * 1024 * 1024
         # round to the 256 KiB multiple the API requires
         self._chunk_bytes -= self._chunk_bytes % (256 * 1024)
         self.pause_requested = threading.Event()   # finish current item, then stop
