@@ -40,7 +40,7 @@ DEFAULTS = {
     "notify_subscribers": False,
     "made_for_kids": False,
     "after_upload": "keep",         # keep | trash_video | trash_folder
-    "theme": "dark",                # dark | light
+    "theme": "midnight",            # midnight | dark | light
     # Automation
     "auto_scan": False,
     "auto_scan_interval_min": 10,

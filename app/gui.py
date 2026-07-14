@@ -27,6 +27,15 @@ CHECKED, UNCHECKED = "☑", "☐"
 # Fluent-inspired palettes applied to the native 'clam' theme. Everything is
 # drawn by Tk primitives (no image sprites), so resizing stays fast.
 THEME_COLORS = {
+    # New default look — matches the splash screen / web UI branding
+    "midnight": {
+        "bg": "#16161d", "surface": "#1f1f2a", "field_bg": "#1c1c26",
+        "border": "#2d2d3d", "hover": "#28283a",
+        "fg": "#ececf4", "muted": "#8b93a7",
+        "accent": "#6d5df6", "accent_hover": "#7f70ff", "accent_press": "#5a4ad0",
+        "ok": "#4ade80", "err": "#f87171", "info": "#60a5fa",
+        "odd": "#1a1a24", "titlebar": "#16161d",
+    },
     "dark": {
         "bg": "#1f1f1f", "surface": "#2b2b2b", "field_bg": "#2a2a2a",
         "border": "#3d3d3d", "hover": "#383838",
@@ -229,7 +238,7 @@ class App:
                                   highlightthickness=0,
                                   selectbackground=c["accent"],
                                   selectforeground="#ffffff")
-        self._set_titlebar_dark(theme == "dark")
+        self._set_titlebar_dark(theme != "light")
         self._update_title_count()
 
     def _set_titlebar_dark(self, dark: bool) -> None:
@@ -1052,11 +1061,14 @@ class App:
         row = ttk.Frame(looks)
         row.pack(fill="x", padx=8, pady=8)
         ttk.Label(row, text="Theme:").pack(side="left")
-        self.theme_var = tk.StringVar(value=self.cfg.get("theme", "dark"))
-        theme_box = ttk.Combobox(row, textvariable=self.theme_var, width=8,
-                                 state="readonly", values=("dark", "light"))
+        self.theme_var = tk.StringVar(value=self.cfg.get("theme", "midnight"))
+        theme_box = ttk.Combobox(row, textvariable=self.theme_var, width=10,
+                                 state="readonly",
+                                 values=("midnight", "dark", "light"))
         theme_box.pack(side="left", padx=6)
         theme_box.bind("<<ComboboxSelected>>", self._on_theme_change)
+        ttk.Label(row, text="midnight = the new look; dark/light = the classic one",
+                  style="Muted.TLabel").pack(side="left", padx=8)
 
         acct = ttk.LabelFrame(tab, text="YouTube account")
         acct.pack(fill="x", padx=10, pady=10)
@@ -2281,6 +2293,21 @@ class App:
                     v["title"], v["privacy"] = ev["title"], ev["privacy"]
         elif etype == "update":
             self._handle_update_event(ev)
+        elif etype == "update_progress":
+            if getattr(self, "_update_prog_bar", None) is not None:
+                try:
+                    self._update_prog_bar.configure(value=ev["pct"])
+                except tk.TclError:
+                    pass
+        elif etype == "update_failed":
+            if getattr(self, "_update_prog_win", None) is not None:
+                try:
+                    self._update_prog_win.destroy()
+                except tk.TclError:
+                    pass
+                self._update_prog_win = None
+            self._log(f"Update failed: {ev['error']}")
+            messagebox.showerror("Update failed", ev["error"])
         elif etype == "update_ready":
             self._save_editor()
             self.save_settings(silent=True)
@@ -2308,36 +2335,75 @@ class App:
             self._log("Update postponed — uploads are running. Use Settings → "
                       "Check for updates later.")
             return
-        if updater.can_self_update() and info.get("exe_url"):
-            if not messagebox.askyesno(
-                    "Update available",
-                    f"Version {info['version']} is available "
-                    f"(you have {__version__}).\n\nDownload and restart now?"):
-                return
-            self._log(f"Downloading v{info['version']}…")
+        self._show_update_dialog(info)
 
-            def worker():
-                try:
-                    last = [0]
+    def _show_update_dialog(self, info: dict) -> None:
+        c = self.colors
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Update available")
+        dlg.configure(bg=c["bg"])
+        w, h = 560, 440
+        x = self.root.winfo_rootx() + (self.root.winfo_width() - w) // 2
+        y = self.root.winfo_rooty() + (self.root.winfo_height() - h) // 2
+        dlg.geometry(f"{w}x{h}+{max(0, x)}+{max(0, y)}")
+        dlg.transient(self.root)
+        dlg.grab_set()
 
-                    def progress(pct):
-                        if pct - last[0] >= 25:
-                            last[0] = pct
-                            self.events.put({"type": "log",
-                                             "text": f"Update download: {pct:.0f}%"})
+        ttk.Label(dlg, text=f"Version {info['version']} is available",
+                  font=("Segoe UI Semibold", 14)).pack(pady=(16, 2))
+        ttk.Label(dlg, text=f"You are running v{__version__}",
+                  style="Muted.TLabel").pack()
+        notes = tk.Text(dlg, wrap="word", height=12, bg=c["field_bg"],
+                        fg=c["fg"], relief="flat", highlightthickness=0,
+                        padx=12, pady=10)
+        notes.insert("1.0", info.get("notes") or "(no release notes)")
+        notes.configure(state="disabled")
+        notes.pack(fill="both", expand=True, padx=14, pady=10)
 
-                    updater.apply_update(info["exe_url"], progress)
-                    self.events.put({"type": "update_ready"})
-                except Exception as exc:
-                    self.events.put({"type": "log",
-                                     "text": f"Update failed: {exc}"})
-
-            threading.Thread(target=worker, daemon=True).start()
+        btns = ttk.Frame(dlg)
+        btns.pack(fill="x", padx=14, pady=(0, 14))
+        import webbrowser
+        ttk.Button(btns, text="Later", command=dlg.destroy
+                   ).pack(side="right", padx=(6, 0))
+        ttk.Button(btns, text="Open releases page",
+                   command=lambda: webbrowser.open(info["html_url"])
+                   ).pack(side="right")
+        if updater.can_self_update() and info.get("asset_url"):
+            ttk.Button(btns, text="⬇ Update and restart", style="Accent.TButton",
+                       command=lambda: self._start_update_download(info, dlg)
+                       ).pack(side="left")
         else:
-            messagebox.showinfo(
-                "Update available",
-                f"Version {info['version']} is available (you have {__version__}).\n"
-                f"Download it from:\n{info['html_url']}")
+            ttk.Label(btns, text="Automatic update isn't available for this "
+                                 "build — download it manually.",
+                      style="Muted.TLabel").pack(side="left")
+
+    def _start_update_download(self, info: dict, dlg: tk.Toplevel) -> None:
+        dlg.destroy()
+        c = self.colors
+        prog = tk.Toplevel(self.root)
+        prog.title("Updating…")
+        prog.configure(bg=c["bg"])
+        prog.geometry("420x120")
+        prog.transient(self.root)
+        prog.protocol("WM_DELETE_WINDOW", lambda: None)
+        ttk.Label(prog, text=f"Downloading v{info['version']}…"
+                  ).pack(pady=(18, 8))
+        bar = ttk.Progressbar(prog, maximum=100.0, length=360)
+        bar.pack(padx=20)
+        self._update_prog_win = prog
+        self._update_prog_bar = bar
+        self._log(f"Downloading update v{info['version']}…")
+
+        def worker():
+            try:
+                updater.apply_update(
+                    info, progress=lambda pct: self.events.put(
+                        {"type": "update_progress", "pct": pct}))
+                self.events.put({"type": "update_ready"})
+            except Exception as exc:
+                self.events.put({"type": "update_failed", "error": str(exc)})
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _item_by_key(self, key: str):
         for item in self.queue_items:
