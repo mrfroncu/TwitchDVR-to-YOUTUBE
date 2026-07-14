@@ -8,7 +8,8 @@ Output:      dist/TwitchDVR-to-YouTube.exe   (Windows)
 import os
 import sys
 
-from PyInstaller.utils.hooks import collect_data_files, copy_metadata
+from PyInstaller.utils.hooks import (collect_data_files, collect_submodules,
+                                     copy_metadata)
 
 spec_dir = os.path.dirname(os.path.abspath(SPEC))
 sys.path.insert(0, spec_dir)
@@ -18,16 +19,23 @@ from app.version import __version__  # noqa: E402
 # metadata of the google libs at runtime.
 datas = collect_data_files("googleapiclient.discovery_cache")
 datas += [(os.path.join(spec_dir, "assets"), "assets")]   # app icon etc.
+datas += [(os.path.join(spec_dir, "web", "static"), "web/static")]  # Studio UI
 for pkg in ("google-api-python-client", "google-auth", "google-auth-oauthlib",
             "google-auth-httplib2"):
     datas += copy_metadata(pkg)
+
+# Studio mode: pywebview picks its platform backend dynamically, and uvicorn
+# resolves loop/protocol classes from strings.
+hiddenimports = collect_submodules("webview") + collect_submodules("uvicorn")
+if sys.platform == "win32":
+    hiddenimports += ["pywinstyles"]
 
 a = Analysis(
     ["run.py"],
     pathex=[],
     binaries=[],
     datas=datas,
-    hiddenimports=["pywinstyles"] if sys.platform == "win32" else [],
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

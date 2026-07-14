@@ -24,6 +24,7 @@ from app.version import __version__
 from . import deviceauth
 
 VODS_DEFAULT = os.environ.get("VODS_DIR", "/vods")
+IS_DESKTOP = os.environ.get("DVR_DESKTOP") == "1"
 
 
 class _Safe(dict):
@@ -54,8 +55,11 @@ class Controller:
         self.auto_status = "off"
         self.lock = threading.RLock()
 
+        self.update_info: dict | None = None
         threading.Thread(target=self._restore_session, daemon=True).start()
         threading.Thread(target=self._background_loop, daemon=True).start()
+        if IS_DESKTOP and self.cfg.get("auto_update_check", True):
+            threading.Thread(target=self._update_check, daemon=True).start()
         if Path(self.cfg["vod_folder"]).is_dir():
             try:
                 self.scan()
@@ -127,6 +131,76 @@ class Controller:
             self.log("Signed in, but the channel lookup failed: "
                      + auth.describe_api_error(exc))
         self.refresh_playlists()
+
+    # --------------------------------------------------------------- updates
+    def _update_check(self) -> None:
+        try:
+            from app import updater
+            info = updater.check_for_update()
+            if info:
+                self.update_info = info
+                self.log(f"New version v{info['version']} is available — see the "
+                         "banner at the top.")
+        except Exception:
+            pass
+
+    def apply_update(self) -> None:
+        from app import updater
+        if not self.update_info:
+            raise RuntimeError("no update available")
+        if self.worker and self.worker.is_alive():
+            raise RuntimeError("uploads are running — pause them first")
+        if not updater.can_self_update():
+            raise RuntimeError("this build cannot self-update — download it "
+                               f"from {self.update_info['html_url']}")
+        self.log(f"Downloading v{self.update_info['version']}…")
+        updater.apply_update(self.update_info)
+        self.log("Update downloaded — restarting…")
+        threading.Timer(1.5, lambda: os._exit(0)).start()
+
+    def start_browser_sign_in(self) -> dict:
+        """Desktop-only: classic loopback browser OAuth (works with a normal
+        'Desktop app' client, unlike the device flow)."""
+        if not IS_DESKTOP:
+            raise RuntimeError("browser sign-in only works in the desktop app")
+        from google_auth_oauthlib.flow import InstalledAppFlow
+
+        from app.auth import SCOPES, SUCCESS_MESSAGE
+        secret_path = (self.cfg.get("client_secret_path") or "").strip()
+        client_id = (self.cfg.get("client_id") or "").strip()
+        client_secret = (self.cfg.get("client_secret") or "").strip()
+        if secret_path and Path(secret_path).exists():
+            flow = InstalledAppFlow.from_client_secrets_file(secret_path, SCOPES)
+        elif client_id and client_secret:
+            flow = InstalledAppFlow.from_client_config({
+                "installed": {
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                    "redirect_uris": ["http://localhost"],
+                }}, SCOPES)
+        else:
+            raise RuntimeError("no OAuth client configured — upload/paste one "
+                               "in Settings first")
+        self.auth_state = {"status": "pending_browser",
+                           "detail": "finish signing in in your browser"}
+        self.log("Opening your browser for Google sign-in…")
+
+        def worker():
+            try:
+                creds = flow.run_local_server(
+                    host="127.0.0.1", port=0,
+                    prompt="select_account consent",
+                    authorization_prompt_message="",
+                    success_message=SUCCESS_MESSAGE, open_browser=True)
+                self._finish_sign_in(creds)
+            except Exception as exc:
+                self.auth_state = {"status": "signed_out", "detail": str(exc)[:200]}
+                self.log(f"Browser sign-in failed: {exc}")
+
+        threading.Thread(target=worker, daemon=True).start()
+        return self.auth_state
 
     def set_client_secret(self, content: str) -> str:
         """Accept an uploaded client_secret*.json (as text) from the browser."""
@@ -756,6 +830,8 @@ class Controller:
             cooldown = limits.get_cooldown(self.cfg)
             return {
                 "version": __version__,
+                "desktop": IS_DESKTOP,
+                "update": self.update_info,
                 "cooldown": limits.fmt_local(cooldown) if cooldown else None,
                 "cooldown_reason": self.cfg.get("cooldown_reason", ""),
                 "uploads_last_24h": limits.count_recent(self.registry),

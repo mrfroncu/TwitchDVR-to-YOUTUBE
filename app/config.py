@@ -42,6 +42,7 @@ DEFAULTS = {
     "after_upload": "keep",         # keep | trash_video | trash_folder
     "theme": "midnight",            # midnight | dark | light
     "ui_style": "modern",           # modern | classic (fonts/spacing/effects)
+    "ui_mode": "studio",            # studio (web UI in native window) | classic (tkinter)
     # Automation
     "auto_scan": False,
     "auto_scan_interval_min": 10,
