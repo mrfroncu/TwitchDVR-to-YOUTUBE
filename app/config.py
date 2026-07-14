@@ -56,6 +56,11 @@ DEFAULTS = {
     "daily_upload_limit": 0,        # 0 = unlimited; stop before YouTube errors
     "cooldown_until": "",           # ISO timestamp while YouTube said "no more"
     "cooldown_reason": "",
+    "cooldown_hours": 24.5,         # wait after uploadLimitExceeded before retry
+    "upload_speed_limit": 0,        # MB/s cap while uploading; 0 = unlimited
+    "verify_uploads": True,         # confirm each upload on YouTube afterwards
+    "extra_tags": "",               # always appended to generated tags
+    "auto_update_check": True,      # look for new releases on startup
     # Web/Docker mode: OAuth client of type "TVs and Limited Input devices"
     "client_id": "",
     "client_secret": "",

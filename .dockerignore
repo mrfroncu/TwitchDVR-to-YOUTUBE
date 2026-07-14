@@ -8,6 +8,7 @@ build
 dist
 config
 docker-compose.yml
+.env
 client_secret*.json
 token.json
 *.spec

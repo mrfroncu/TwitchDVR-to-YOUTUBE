@@ -17,6 +17,7 @@ from app.version import __version__  # noqa: E402
 # googleapiclient needs its bundled API discovery documents and the package
 # metadata of the google libs at runtime.
 datas = collect_data_files("googleapiclient.discovery_cache")
+datas += [(os.path.join(spec_dir, "assets"), "assets")]   # app icon etc.
 for pkg in ("google-api-python-client", "google-auth", "google-auth-oauthlib",
             "google-auth-httplib2"):
     datas += copy_metadata(pkg)
@@ -42,6 +43,8 @@ exe = EXE(
     a.datas,
     [],
     name="TwitchDVR-to-YouTube",
+    icon=os.path.join(spec_dir, "assets", "icon.ico")
+        if sys.platform == "win32" else None,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

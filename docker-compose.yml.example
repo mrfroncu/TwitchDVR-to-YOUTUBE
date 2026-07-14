@@ -16,4 +16,6 @@ services:
       - /path/to/your/vods:/vods
     environment:
       - TZ=Europe/Warsaw
+    env_file:
+      - .env            # WEB_PASSWORD lives here (copy .env.example)
     restart: unless-stopped

@@ -49,11 +49,16 @@ def next_slot(registry: dict, limit: int) -> datetime:
     return times[-limit] + WINDOW
 
 
-def quota_cooldown(reason: str) -> datetime:
-    """How long to wait after YouTube said no."""
+def quota_cooldown(reason: str, hours: float | None = None) -> datetime:
+    """How long to wait after YouTube said no. `hours` overrides the wait
+    for the channel upload limit (uploadLimitExceeded)."""
     now = datetime.now(timezone.utc)
     if "uploadLimitExceeded" in reason:
-        return now + WINDOW          # channel limit: rolling ~24 h
+        try:
+            wait = timedelta(hours=float(hours)) if hours else WINDOW
+        except (TypeError, ValueError):
+            wait = WINDOW
+        return now + wait            # channel limit: rolling ~24 h by default
     # API quota: resets at midnight Pacific time
     try:
         from zoneinfo import ZoneInfo

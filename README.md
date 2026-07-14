@@ -1,6 +1,29 @@
-# TwitchDVR to YouTube
+<p align="center">
+  <img src="assets/icon.png" width="110" alt="TwitchDVR to YouTube icon">
+</p>
 
-A small Windows desktop app that uploads [LiveStreamDVR](https://github.com/MrBrax/LiveStreamDVR)
+<h1 align="center">TwitchDVR to YouTube</h1>
+
+<p align="center">
+  <a href="https://github.com/mrfroncu/TwitchDVR-to-YOUTUBE/releases/latest"><img
+    src="https://img.shields.io/github/v/release/mrfroncu/TwitchDVR-to-YOUTUBE?label=release&color=6d5df6" alt="Latest release"></a>
+  <a href="https://github.com/mrfroncu/TwitchDVR-to-YOUTUBE/actions/workflows/release.yml"><img
+    src="https://github.com/mrfroncu/TwitchDVR-to-YOUTUBE/actions/workflows/release.yml/badge.svg" alt="Build"></a>
+  <a href="LICENSE"><img
+    src="https://img.shields.io/badge/license-MIT-2d7ff9" alt="License: MIT"></a>
+  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Docker-4ade80" alt="Platforms">
+  <img src="https://img.shields.io/badge/python-3.10%2B-f7cf46" alt="Python 3.10+">
+</p>
+
+<p align="center">
+  Automated YouTube uploads for <a href="https://github.com/MrBrax/LiveStreamDVR">LiveStreamDVR</a>
+  Twitch recordings — metadata, chapters, playlists, automation and channel management.
+</p>
+
+---
+
+A desktop app (plus a Docker/web version) that uploads
+[LiveStreamDVR](https://github.com/MrBrax/LiveStreamDVR)
 Twitch VOD recordings to YouTube — sequentially, with all the stream metadata carried over:
 
 - **Title** from the Twitch stream/VOD title (templated, e.g. `{title} | {streamer} VOD {date}`)
@@ -165,6 +188,10 @@ docker compose up -d --build
 
 Open `http://<server>:4091`. Config, token and upload history live in the `./config`
 volume; your VOD library is mounted at `/vods`.
+
+**Password protection**: copy `.env.example` to `.env` next to your compose file and set
+`WEB_PASSWORD` — the whole UI and API then require it (HTTP Basic; any username). The
+`.env` file is gitignored and excluded from deploys.
 
 **Signing in on a server** uses Google's device flow: create an OAuth client of type
 **“TVs and Limited Input devices”** in Google Cloud Console, paste its client ID/secret in

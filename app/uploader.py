@@ -79,12 +79,16 @@ class _ProgressReader:
     `len` is what requests uses for the Content-Length header.
     """
 
-    def __init__(self, fh, start: int, end: int, callback, cancel_event):
+    def __init__(self, fh, start: int, end: int, callback, cancel_event,
+                 max_bps: float = 0):
         self._fh = fh
+        self._start = start
         self._pos = start
         self._end = end
         self._callback = callback
         self._cancel = cancel_event
+        self._max_bps = max(0.0, float(max_bps or 0))
+        self._t0 = time.monotonic()
         self._last_report = 0.0
         self.len = end - start
         fh.seek(start)
@@ -99,6 +103,12 @@ class _ProgressReader:
             n = remaining
         data = self._fh.read(n)
         self._pos += len(data)
+        if self._max_bps:
+            # keep average throughput at or below the cap
+            expected = (self._pos - self._start) / self._max_bps
+            elapsed = time.monotonic() - self._t0
+            if expected > elapsed:
+                time.sleep(min(expected - elapsed, 1.0))
         now = time.monotonic()
         if now - self._last_report >= 0.5 or self._pos >= self._end:
             self._last_report = now
@@ -132,13 +142,16 @@ def verify_video(service, video_id: str) -> tuple[bool, str]:
 
 class UploadWorker(threading.Thread):
     def __init__(self, credentials, items: list[QueueItem], events,
-                 daily_limit: int = 0, count_recent=None):
+                 daily_limit: int = 0, count_recent=None,
+                 speed_limit_bps: float = 0, verify: bool = True):
         super().__init__(daemon=True, name="upload-worker")
         self._credentials = credentials
         self._items = items
         self._events = events
         self._daily_limit = max(0, int(daily_limit))
         self._count_recent = count_recent   # callable -> uploads in last ~24h
+        self._speed_limit_bps = max(0.0, float(speed_limit_bps or 0))
+        self._verify_enabled = bool(verify)
         self._session: AuthorizedSession | None = None
         self.pause_requested = threading.Event()   # finish current item, then stop
         self.cancel_current = threading.Event()    # abort the in-flight item
@@ -180,8 +193,12 @@ class UploadWorker(threading.Thread):
             try:
                 video_id = self._upload_one(service, item)
                 item.video_id = video_id
-                self._set_status(item, "verifying", "confirming video on YouTube…")
-                ok, detail = self._verify_with_retry(service, video_id)
+                if self._verify_enabled:
+                    self._set_status(item, "verifying",
+                                     "confirming video on YouTube…")
+                    ok, detail = self._verify_with_retry(service, video_id)
+                else:
+                    ok, detail = None, "verification disabled in settings"
                 url = f"https://youtu.be/{video_id}"
                 if ok is True:
                     self._set_status(item, "done", f"{url} — verified ({detail})",
@@ -336,7 +353,8 @@ class UploadWorker(threading.Thread):
                                 "speed_bps": speed, "eta_s": eta})
 
                 reader = _ProgressReader(fh, offset, total, report,
-                                         self.cancel_current)
+                                         self.cancel_current,
+                                         max_bps=self._speed_limit_bps)
                 try:
                     resp = self._session.put(
                         session_uri, data=reader,

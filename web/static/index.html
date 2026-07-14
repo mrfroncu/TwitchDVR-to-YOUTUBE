@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>TwitchDVR → YouTube</title>
 <link rel="stylesheet" href="/static/style.css">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📤</text></svg>">
+<link rel="icon" type="image/png" href="/static/icon.png">
 </head>
 <body>
 <aside class="sidebar">
@@ -222,6 +222,20 @@
                onchange="saveSettings()">
         <span class="muted">0 = no limit; stops before YouTube's own limit errors.
           Used <span id="uploads-24h">0</span> in the last 24h.</span>
+      </div>
+      <div class="field-row">
+        <span>Upload speed limit (MB/s)</span>
+        <input id="set-speed" class="input xs" type="number" min="0" step="0.5"
+               onchange="saveSettings()">
+        <span>Retry wait after upload limit (hours)</span>
+        <input id="set-cooldown-h" class="input xs" type="number" min="0.5" step="0.5"
+               onchange="saveSettings()">
+      </div>
+      <label class="switch-row"><input type="checkbox" id="set-verify"
+        onchange="saveSettings()"><span>Verify each upload on YouTube after it finishes</span></label>
+      <div class="field-row">
+        <span>Extra tags (always added)</span>
+        <input id="set-extra-tags" class="input grow" onchange="saveSettings()">
       </div>
       <div class="field-row">
         <span>After verified upload</span>

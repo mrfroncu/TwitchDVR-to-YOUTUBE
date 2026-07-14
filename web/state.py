@@ -203,11 +203,17 @@ class Controller:
         return len(vods)
 
     def _generate_meta(self, vod: Vod) -> dict:
+        tags = scanner.build_tags(vod)
+        seen = {t.lower() for t in tags}
+        for tag in (t.strip() for t in self.cfg.get("extra_tags", "").split(",")):
+            if tag and tag.lower() not in seen:
+                tags.append(tag)
+                seen.add(tag.lower())
         return {
             "title": scanner.build_title(vod, self.cfg["title_template"]),
             "description": scanner.build_description(
                 vod, self.cfg.get("description_template") or None),
-            "tags": ", ".join(scanner.build_tags(vod)),
+            "tags": ", ".join(tags),
             "privacy": self.cfg["privacy"],
             "playlist_choice": "(default)",
         }
@@ -379,7 +385,9 @@ class Controller:
         self.worker = UploadWorker(
             self.credentials, self.queue_items, self.worker_events,
             daily_limit=int(self.cfg.get("daily_upload_limit", 0) or 0),
-            count_recent=lambda: limits.count_recent(self.registry))
+            count_recent=lambda: limits.count_recent(self.registry),
+            speed_limit_bps=float(self.cfg.get("upload_speed_limit", 0) or 0) * 1e6,
+            verify=bool(self.cfg.get("verify_uploads", True)))
         self.worker.start()
         threading.Thread(target=self._pump_worker,
                          args=(self.worker_events,), daemon=True).start()
@@ -445,7 +453,8 @@ class Controller:
             elif etype == "worker_done":
                 reason = ev.get("reason", "")
                 if reason == "quota":
-                    until = limits.quota_cooldown(ev.get("detail", ""))
+                    until = limits.quota_cooldown(ev.get("detail", ""),
+                                                  self.cfg.get("cooldown_hours"))
                     with self.lock:
                         limits.set_cooldown(self.cfg, until,
                                             ev.get("detail", "limit"))
