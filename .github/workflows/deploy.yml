@@ -5,6 +5,15 @@ on:
     branches: [main]
   workflow_dispatch:
 
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+env:
+  # Hardcoded on purpose. An empty/missing variable here once turned the
+  # rsync destination into the server root and --delete wiped it.
+  DEPLOY_PATH: /mnt/user/appdata/DVR-to-YT
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -24,14 +33,35 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
 
-      - name: Verify SSH
+      - name: Safety checks and prepare target directory
+        env:
+          SSH_USER: ${{ secrets.SSH_USER }}
+          HOST: ${{ secrets.TAILSCALE_HOST }}
         run: |
-          ssh -o StrictHostKeyChecking=no \
-            ${{ secrets.SSH_USER }}@${{ secrets.TAILSCALE_HOST }} \
-            "hostname"
+          set -euo pipefail
+          # Belt and braces: never let rsync --delete run against a short,
+          # relative, or unexpected path.
+          if [ -z "$SSH_USER" ] || [ -z "$HOST" ]; then
+            echo "SSH_USER / TAILSCALE_HOST secrets are not set"; exit 1
+          fi
+          case "$DEPLOY_PATH" in
+            /mnt/user/appdata/?*) ;;   # must live under Unraid appdata
+            *) echo "Refusing to deploy: DEPLOY_PATH '$DEPLOY_PATH' is not under /mnt/user/appdata"; exit 1 ;;
+          esac
+          ssh -o StrictHostKeyChecking=no "$SSH_USER@$HOST" \
+            "mkdir -p '$DEPLOY_PATH' && touch '$DEPLOY_PATH/.dvr2yt-deploy' && echo 'target ready on' \$(hostname)"
 
       - name: Sync files
+        env:
+          SSH_USER: ${{ secrets.SSH_USER }}
+          HOST: ${{ secrets.TAILSCALE_HOST }}
         run: |
+          set -euo pipefail
+          # Re-assert the guard right before the destructive command.
+          case "$DEPLOY_PATH" in
+            /mnt/user/appdata/?*) ;;
+            *) echo "bad DEPLOY_PATH"; exit 1 ;;
+          esac
           rsync -az --delete \
             -e "ssh -o StrictHostKeyChecking=no" \
             --exclude '.git' \
@@ -43,11 +73,27 @@ jobs:
             --exclude 'config' \
             --exclude 'client_secret*.json' \
             --exclude '.env' \
-            ./ \
-            ${{ secrets.SSH_USER }}@${{ secrets.TAILSCALE_HOST }}:${{ secrets.DEPLOY_PATH }}/
+            --exclude '.dvr2yt-deploy' \
+            ./ "$SSH_USER@$HOST:$DEPLOY_PATH/"
 
-      - name: Restart containers
+      - name: Rebuild and restart the container
+        env:
+          SSH_USER: ${{ secrets.SSH_USER }}
+          HOST: ${{ secrets.TAILSCALE_HOST }}
         run: |
-          ssh -o StrictHostKeyChecking=no \
-            ${{ secrets.SSH_USER }}@${{ secrets.TAILSCALE_HOST }} \
-            "cd '${{ secrets.DEPLOY_PATH }}' && docker compose up -d --build"
+          set -euo pipefail
+          ssh -o StrictHostKeyChecking=no "$SSH_USER@$HOST" bash -s <<EOF
+          set -e
+          cd "$DEPLOY_PATH"
+          # marker written by the prepare step - proves we're in our own dir
+          test -f .dvr2yt-deploy
+          if [ ! -f docker-compose.yml ]; then
+            cp docker-compose.yml.example docker-compose.yml
+            echo "NOTE: created docker-compose.yml from the example - edit the volume paths and create .env (WEB_PASSWORD)!"
+          fi
+          if docker compose version >/dev/null 2>&1; then
+            docker compose up -d --build
+          else
+            docker-compose up -d --build
+          fi
+          EOF
