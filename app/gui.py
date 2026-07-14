@@ -126,6 +126,7 @@ class App:
         self._apply_theme(self.cfg.get("theme", "dark"))
 
         root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
         root.after(POLL_MS, self._poll_events)
         root.after(1000, self._auto_tick)
 
@@ -143,9 +144,26 @@ class App:
             self.root.after(200, self.scan_folder)
 
     # ----------------------------------------------------------------- theme --
+    @staticmethod
+    def _font_family() -> str:
+        if sys.platform == "win32":
+            return "Segoe UI"
+        if sys.platform == "darwin":
+            return "Helvetica Neue"
+        return "TkDefaultFont"
+
     def _apply_theme(self, theme: str) -> None:
         theme = theme if theme in THEME_COLORS else "dark"
         self.colors = c = THEME_COLORS[theme]
+        modern = self.cfg.get("ui_style", "modern") != "classic"
+        family = self._font_family()
+        base_font = (family, 10 if modern else 9)
+        bold_font = (family + " Semibold" if sys.platform == "win32" else family,
+                     10 if modern else 9)
+        btn_pad = (14, 8) if modern else (10, 5)
+        tab_pad = (18, 10) if modern else (16, 8)
+        row_h = 30 if modern else 26
+        field_pad = 6 if modern else 4
         style = ttk.Style()
         try:
             style.theme_use("clam")
@@ -153,35 +171,40 @@ class App:
             pass
         self.root.configure(bg=c["bg"])
         style.configure(
-            ".", background=c["bg"], foreground=c["fg"],
+            ".", background=c["bg"], foreground=c["fg"], font=base_font,
             bordercolor=c["border"], darkcolor=c["bg"], lightcolor=c["bg"],
             troughcolor=c["surface"], fieldbackground=c["field_bg"],
             focuscolor=c["accent"], selectbackground=c["accent"],
             selectforeground="#ffffff", insertcolor=c["fg"])
-        style.configure("TLabel", background=c["bg"], foreground=c["fg"])
-        style.configure("Muted.TLabel", foreground=c["muted"])
+        style.configure("TLabel", background=c["bg"], foreground=c["fg"],
+                        font=base_font)
+        style.configure("Muted.TLabel", foreground=c["muted"],
+                        font=(family, 9 if modern else 8))
         style.configure("TFrame", background=c["bg"])
         style.configure("TLabelframe", background=c["bg"], bordercolor=c["border"],
                         relief="solid", borderwidth=1)
-        style.configure("TLabelframe.Label", background=c["bg"], foreground=c["muted"])
+        style.configure("TLabelframe.Label", background=c["bg"],
+                        foreground=c["muted"], font=bold_font)
         style.configure("TNotebook", background=c["bg"], borderwidth=0,
                         tabmargins=(10, 8, 10, 6))
-        style.configure("TNotebook.Tab", padding=(16, 8), background=c["bg"],
-                        borderwidth=0)
+        style.configure("TNotebook.Tab", padding=tab_pad, background=c["bg"],
+                        borderwidth=0, font=base_font)
         # equal-size tabs; selection is marked purely by the accent color
         style.map("TNotebook.Tab",
                   background=[("selected", c["accent"]), ("active", c["hover"])],
                   foreground=[("selected", "#ffffff"), ("!selected", c["muted"])],
                   expand=[("selected", (0, 0, 0, 0))],
-                  padding=[("selected", (16, 8))])
+                  padding=[("selected", tab_pad)])
         style.configure("TButton", background=c["surface"], foreground=c["fg"],
-                        borderwidth=1, relief="flat", padding=(10, 5))
+                        borderwidth=1, relief="flat", padding=btn_pad,
+                        font=base_font)
         style.map("TButton",
                   background=[("disabled", c["bg"]), ("pressed", c["border"]),
                               ("active", c["hover"])],
                   foreground=[("disabled", c["muted"])])
         style.configure("Accent.TButton", background=c["accent"],
-                        foreground="#ffffff", bordercolor=c["accent"])
+                        foreground="#ffffff", bordercolor=c["accent"],
+                        font=bold_font)
         style.map("Accent.TButton",
                   background=[("disabled", c["surface"]),
                               ("pressed", c["accent_press"]),
@@ -189,16 +212,17 @@ class App:
                   foreground=[("disabled", c["muted"])])
         style.configure("Treeview", background=c["field_bg"],
                         fieldbackground=c["field_bg"], foreground=c["fg"],
-                        rowheight=26, borderwidth=0)
+                        rowheight=row_h, borderwidth=0, font=base_font)
         style.map("Treeview", background=[("selected", c["accent"])],
                   foreground=[("selected", "#ffffff")])
         style.configure("Treeview.Heading", background=c["surface"],
-                        foreground=c["fg"], relief="flat", padding=(6, 4))
+                        foreground=c["fg"], relief="flat", font=bold_font,
+                        padding=(8, 6) if modern else (6, 4))
         style.map("Treeview.Heading", background=[("active", c["hover"])])
         for widget in ("TEntry", "TCombobox", "TSpinbox"):
             style.configure(widget, fieldbackground=c["field_bg"],
                             foreground=c["fg"], insertcolor=c["fg"],
-                            bordercolor=c["border"], padding=4,
+                            bordercolor=c["border"], padding=field_pad,
                             arrowcolor=c["fg"], background=c["surface"])
             style.map(widget,
                       fieldbackground=[("readonly", c["field_bg"]),
@@ -238,6 +262,8 @@ class App:
                                   highlightthickness=0,
                                   selectbackground=c["accent"],
                                   selectforeground="#ffffff")
+        for canvas in getattr(self, "_scroll_canvases", []):
+            canvas.configure(bg=c["bg"])
         self._set_titlebar_dark(theme != "light")
         self._update_title_count()
 
@@ -273,6 +299,32 @@ class App:
         self.cfg["theme"] = theme
         config.save_config(self.cfg)
         self._apply_theme(theme)
+
+    def _on_ui_style_change(self, _event=None) -> None:
+        self.cfg["ui_style"] = self.ui_style_var.get()
+        config.save_config(self.cfg)
+        self._apply_theme(self.cfg.get("theme", "midnight"))
+
+    def _on_tab_changed(self, _event=None) -> None:
+        """Subtle cross-fade when switching tabs (modern style only)."""
+        if self.cfg.get("ui_style", "modern") == "classic":
+            return
+        try:
+            if float(self.root.attributes("-alpha")) < 0.99:
+                return   # startup fade owns the alpha channel
+            steps = [0.86, 0.92, 0.97, 1.0]
+
+            def fade(i=0):
+                if i < len(steps):
+                    try:
+                        self.root.attributes("-alpha", steps[i])
+                        self.root.after(18, fade, i + 1)
+                    except tk.TclError:
+                        pass
+
+            fade()
+        except tk.TclError:
+            pass
 
     # ------------------------------------------------------------ videos tab --
     def _build_videos_tab(self) -> None:
@@ -1052,9 +1104,33 @@ class App:
                         "Deleted {n} video(s) from YouTube.", reload_after=True)
 
     # ---------------------------------------------------------- settings tab --
+    def _make_scrollable(self, parent: ttk.Frame) -> ttk.Frame:
+        """A vertically scrollable container (mouse wheel included)."""
+        canvas = tk.Canvas(parent, highlightthickness=0, borderwidth=0)
+        vsb = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+        inner = ttk.Frame(canvas)
+        inner_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+        inner.bind("<Configure>",
+                   lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>",
+                    lambda e: canvas.itemconfigure(inner_id, width=e.width))
+        canvas.configure(yscrollcommand=vsb.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+
+        def wheel(event):
+            canvas.yview_scroll(int(-event.delta / 120), "units")
+
+        inner.bind("<Enter>", lambda _e: canvas.bind_all("<MouseWheel>", wheel))
+        inner.bind("<Leave>", lambda _e: canvas.unbind_all("<MouseWheel>"))
+        self._scroll_canvases = getattr(self, "_scroll_canvases", [])
+        self._scroll_canvases.append(canvas)
+        return inner
+
     def _build_settings_tab(self) -> None:
-        tab = ttk.Frame(self.notebook)
-        self.notebook.add(tab, text=" ⚙ Settings ")
+        outer = ttk.Frame(self.notebook)
+        self.notebook.add(outer, text=" ⚙ Settings ")
+        tab = self._make_scrollable(outer)
 
         looks = ttk.LabelFrame(tab, text="Appearance")
         looks.pack(fill="x", padx=10, pady=(10, 0))
@@ -1067,7 +1143,13 @@ class App:
                                  values=("midnight", "dark", "light"))
         theme_box.pack(side="left", padx=6)
         theme_box.bind("<<ComboboxSelected>>", self._on_theme_change)
-        ttk.Label(row, text="midnight = the new look; dark/light = the classic one",
+        ttk.Label(row, text="UI style:").pack(side="left", padx=(16, 0))
+        self.ui_style_var = tk.StringVar(value=self.cfg.get("ui_style", "modern"))
+        style_box = ttk.Combobox(row, textvariable=self.ui_style_var, width=8,
+                                 state="readonly", values=("modern", "classic"))
+        style_box.pack(side="left", padx=6)
+        style_box.bind("<<ComboboxSelected>>", self._on_ui_style_change)
+        ttk.Label(row, text="modern = larger type, roomier layout, animations",
                   style="Muted.TLabel").pack(side="left", padx=8)
 
         acct = ttk.LabelFrame(tab, text="YouTube account")

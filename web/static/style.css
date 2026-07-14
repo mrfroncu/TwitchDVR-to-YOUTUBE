@@ -223,6 +223,42 @@ input[type="radio"] { accent-color: var(--accent); }
 }
 .logbar.open .log-lines { display: block; }
 
+/* --------------------------------------------------------------- login */
+.login-overlay {
+  position: fixed; inset: 0; z-index: 100;
+  background: rgba(9, 11, 16, .82);
+  backdrop-filter: blur(10px);
+  display: grid; place-items: center;
+}
+.login-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 34px 38px;
+  width: min(360px, 92vw);
+  display: flex; flex-direction: column; gap: 12px;
+  align-items: center; text-align: center;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, .6);
+  animation: slide-in .25s ease;
+}
+.login-card img { border-radius: 18px; }
+.login-card .input, .login-card .btn { width: 100%; }
+.login-error { color: var(--err); font-size: 13px; min-height: 18px; }
+
+/* ------------------------------------------------------------- sorting */
+th.sortable { cursor: pointer; user-select: none; }
+th.sortable:hover { color: var(--fg); }
+
+/* -------------------------------------------------- playlist membership */
+.pl-membership {
+  display: flex; flex-direction: column; gap: 4px;
+  max-height: 140px; overflow-y: auto; margin: 4px 0;
+}
+.pl-row {
+  display: flex; justify-content: space-between; align-items: center;
+  background: var(--card-2); border-radius: 8px; padding: 4px 10px;
+}
+
 /* --------------------------------------------------------------- toast */
 .toast {
   position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);

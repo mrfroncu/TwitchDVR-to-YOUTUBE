@@ -21,6 +21,7 @@
     <button class="nav-btn" data-view="queue">📤 <span>Queue</span> <em id="queue-badge" class="badge hidden"></em></button>
     <button class="nav-btn" data-view="automation">🤖 <span>Automation</span></button>
     <button class="nav-btn" data-view="playlists">📃 <span>Playlists</span></button>
+    <button class="nav-btn" data-view="myyt">📺 <span>My YouTube</span></button>
     <button class="nav-btn" data-view="settings">⚙️ <span>Settings</span></button>
   </nav>
   <div class="sidebar-foot">
@@ -60,8 +61,14 @@
       <div class="table-wrap">
         <table id="videos-table">
           <thead><tr>
-            <th class="w-ck"></th><th>Date</th><th>Streamer</th><th>Stream title</th>
-            <th>Length</th><th>Size</th><th>Ch.</th><th>Status</th>
+            <th class="w-ck"></th>
+            <th class="sortable" onclick="sortVods('date')">Date</th>
+            <th class="sortable" onclick="sortVods('streamer')">Streamer</th>
+            <th class="sortable" onclick="sortVods('stream_title')">Stream title</th>
+            <th class="sortable" onclick="sortVods('duration')">Length</th>
+            <th class="sortable" onclick="sortVods('size')">Size</th>
+            <th class="sortable" onclick="sortVods('chapters')">Ch.</th>
+            <th class="sortable" onclick="sortVods('status')">Status</th>
           </tr></thead>
           <tbody></tbody>
         </table>
@@ -159,6 +166,86 @@
     </div>
   </section>
 
+  <!-- ========================================================== MY YOUTUBE -->
+  <section id="view-myyt" class="view hidden">
+    <header class="view-head">
+      <h1>My YouTube</h1>
+      <div class="toolbar">
+        <span id="yt-count" class="chip chip-muted"></span>
+        <button class="btn btn-accent" onclick="loadYt()">⟳ Load videos</button>
+      </div>
+    </header>
+    <div class="card">
+      <div class="bulkbar">
+        <button class="btn btn-ghost sm" onclick="ytCheckAll(true)">Check all</button>
+        <button class="btn btn-ghost sm" onclick="ytCheckAll(false)">None</button>
+        <span class="sep"></span>
+        <select id="yt-bulk-playlist" class="input sm"></select>
+        <button class="btn sm" onclick="ytBulk('playlist')">Add to playlist</button>
+        <select id="yt-bulk-privacy" class="input sm">
+          <option>private</option><option>unlisted</option><option>public</option>
+        </select>
+        <button class="btn sm" onclick="ytBulk('privacy')">Set privacy</button>
+        <span class="sep"></span>
+        <button class="btn btn-danger sm" onclick="ytBulk('delete')">🗑 Delete from YouTube</button>
+      </div>
+      <div class="table-wrap">
+        <table id="yt-table">
+          <thead><tr>
+            <th class="w-ck"></th>
+            <th class="sortable" onclick="sortYt('published')">Published</th>
+            <th class="sortable" onclick="sortYt('title')">Title</th>
+            <th class="sortable" onclick="sortYt('duration')">Length</th>
+            <th class="sortable" onclick="sortYt('privacy')">Privacy</th>
+            <th class="sortable" onclick="sortYt('views')">Views</th>
+            <th class="sortable" onclick="sortYt('upload_status')">Status</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+    <p class="muted">Click a row to edit the video; double-click to open it on YouTube.
+      Playlist add / privacy / delete cost ~50 quota units per video.</p>
+  </section>
+
+  <!-- ------------------------------------------------------- yt editor -->
+  <div id="yt-editor" class="editor hidden">
+    <div class="editor-head">
+      <h2>Edit on YouTube</h2>
+      <button class="btn btn-ghost sm" onclick="closeYtEditor()">✕</button>
+    </div>
+    <label>Title <span id="yt-title-count" class="muted"></span></label>
+    <input id="yt-ed-title" class="input" maxlength="100">
+    <label>Tags (comma separated)</label>
+    <input id="yt-ed-tags" class="input">
+    <div class="field-row">
+      <div class="grow"><label>Privacy</label>
+        <select id="yt-ed-privacy" class="input">
+          <option>private</option><option>unlisted</option><option>public</option>
+        </select></div>
+      <div class="grow"><label>Category</label>
+        <select id="yt-ed-category" class="input">
+          <option value="20">Gaming</option><option value="24">Entertainment</option>
+          <option value="22">People &amp; Blogs</option>
+          <option value="28">Science &amp; Technology</option>
+        </select></div>
+    </div>
+    <label>Description</label>
+    <textarea id="yt-ed-desc" class="input" rows="10" spellcheck="false"></textarea>
+    <label>In playlists
+      <button class="btn btn-ghost sm" onclick="ytCheckMemberships()">⟳ Check</button>
+    </label>
+    <div id="yt-memberships" class="pl-membership"></div>
+    <div class="field-row">
+      <select id="yt-add-playlist" class="input grow"></select>
+      <button class="btn sm" onclick="ytAddToPlaylist()">＋ Add</button>
+    </div>
+    <div class="field-row">
+      <button class="btn btn-accent" onclick="saveYtEditor()">💾 Save to YouTube</button>
+      <button class="btn" onclick="window.open('https://youtu.be/' + ytEditorId)">Open ↗</button>
+    </div>
+  </div>
+
   <!-- =========================================================== SETTINGS -->
   <section id="view-settings" class="view hidden">
     <header class="view-head"><h1>Settings</h1></header>
@@ -170,10 +257,16 @@
           <input id="client-secret" class="input grow" type="password"
                  placeholder="OAuth client secret" spellcheck="false">
         </div>
+        <div class="field-row">
+          <input type="file" id="secret-file" accept=".json,application/json" class="hidden">
+          <button class="btn" onclick="el('secret-file').click()">📄 Upload client_secret.json…</button>
+          <span id="secret-status" class="muted"></span>
+        </div>
         <p class="muted">Create an OAuth client of type <b>“TVs and Limited Input
           devices”</b> in Google Cloud Console (the YouTube Data API v3 must be
-          enabled). Alternatively drop its <code>client_secret.json</code> into the
-          config volume.</p>
+          enabled) and upload its JSON here — or paste the ID/secret above.
+          ⚠ A “Desktop app” client (used by the desktop version) will be rejected
+          with <code>invalid_client</code>.</p>
         <div class="field-row">
           <span>Active channel</span>
           <select id="account-select" class="input" onchange="switchAccount()"></select>
@@ -286,6 +379,19 @@
 </footer>
 
 <div id="toast" class="toast hidden"></div>
+
+<div id="login-overlay" class="login-overlay hidden">
+  <div class="login-card">
+    <img src="/static/icon.png" width="72" height="72" alt="">
+    <h2>TwitchDVR → YouTube</h2>
+    <p class="muted">This server is password protected.</p>
+    <input id="login-password" class="input" type="password" placeholder="Password"
+           onkeydown="if (event.key === 'Enter') doLogin()">
+    <button class="btn btn-accent" onclick="doLogin()">Sign in</button>
+    <div id="login-error" class="login-error"></div>
+  </div>
+</div>
+
 <script src="/static/app.js"></script>
 </body>
 </html>
