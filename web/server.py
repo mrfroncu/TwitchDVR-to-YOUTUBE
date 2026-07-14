@@ -179,6 +179,15 @@ def create_app() -> FastAPI:
         client_id = ctl.set_client_secret(str(body.get("content", "")))
         return {"ok": True, "client_id": client_id}
 
+    @app.post("/api/auth/browser")
+    def auth_browser():
+        return ctl.start_browser_sign_in()
+
+    @app.post("/api/update/apply")
+    def update_apply():
+        ctl.apply_update()
+        return {"ok": True}
+
     # ------------------------------------------------------------ yt manager
     @app.get("/api/yt/videos")
     def yt_videos():

@@ -305,6 +305,12 @@ class App:
         config.save_config(self.cfg)
         self._apply_theme(self.cfg.get("theme", "midnight"))
 
+    def _on_ui_mode_change(self, _event=None) -> None:
+        self.cfg["ui_mode"] = self.ui_mode_var.get()
+        config.save_config(self.cfg)
+        self._log(f"Interface set to '{self.cfg['ui_mode']}' — restart the app "
+                  "to apply.")
+
     def _on_tab_changed(self, _event=None) -> None:
         """Subtle cross-fade when switching tabs (modern style only)."""
         if self.cfg.get("ui_style", "modern") == "classic":
@@ -1150,6 +1156,14 @@ class App:
         style_box.pack(side="left", padx=6)
         style_box.bind("<<ComboboxSelected>>", self._on_ui_style_change)
         ttk.Label(row, text="modern = larger type, roomier layout, animations",
+                  style="Muted.TLabel").pack(side="left", padx=8)
+        ttk.Label(row, text="Interface:").pack(side="left", padx=(16, 0))
+        self.ui_mode_var = tk.StringVar(value=self.cfg.get("ui_mode", "studio"))
+        mode_box = ttk.Combobox(row, textvariable=self.ui_mode_var, width=8,
+                                state="readonly", values=("studio", "classic"))
+        mode_box.pack(side="left", padx=6)
+        mode_box.bind("<<ComboboxSelected>>", self._on_ui_mode_change)
+        ttk.Label(row, text="studio = the new interface (restart required)",
                   style="Muted.TLabel").pack(side="left", padx=8)
 
         acct = ttk.LabelFrame(tab, text="YouTube account")

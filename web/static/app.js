@@ -72,9 +72,40 @@ document.querySelectorAll(".nav-btn").forEach(btn => {
     document.querySelectorAll(".nav-btn").forEach(b => b.classList.remove("active"));
     btn.classList.add("active");
     document.querySelectorAll(".view").forEach(v => v.classList.add("hidden"));
-    el("view-" + btn.dataset.view).classList.remove("hidden");
+    const view = el("view-" + btn.dataset.view);
+    view.classList.remove("hidden", "anim");
+    void view.offsetWidth;          // restart the entry animation
+    view.classList.add("anim");
   });
 });
+
+/* ---------------------------------------------------------- desktop bits */
+function renderDesktop() {
+  const isDesktop = !!S.desktop;
+  el("browser-signin").classList.toggle("hidden", !isDesktop);
+  el("desktop-settings").classList.toggle("hidden", !isDesktop);
+  if (isDesktop && document.activeElement !== el("set-ui-mode")) {
+    el("set-ui-mode").value = S.cfg.ui_mode || "studio";
+  }
+  const banner = el("update-banner");
+  if (isDesktop && S.update && !banner.dataset.dismissed) {
+    el("update-version").textContent = "v" + S.update.version;
+    banner.classList.remove("hidden");
+  } else if (!S.update) {
+    banner.classList.add("hidden");
+  }
+}
+function saveUiMode() {
+  api("/api/settings", { ui_mode: el("set-ui-mode").value });
+  toast("Interface saved — restart the app to apply.", true);
+}
+async function applyUpdate() {
+  if (!confirm(`Download v${S.update.version} and restart now?`)) return;
+  try {
+    await api("/api/update/apply");
+    toast("Updating — the app will restart itself…", true);
+  } catch (e) { /* toast shown */ }
+}
 
 /* ------------------------------------------------------------ videos */
 let vodsSort = { col: "", rev: false };
@@ -480,6 +511,12 @@ function renderAuth() {
     status.textContent = "Connected" + (a.channel ? ": " + a.channel : "");
     status.className = "chip";
     el("device-code-box").classList.add("hidden");
+  } else if (a.status === "pending_browser") {
+    chip.textContent = "check your browser…";
+    chip.className = "chip chip-muted";
+    status.textContent = "Finish signing in in the browser window";
+    status.className = "chip chip-muted";
+    el("device-code-box").classList.add("hidden");
   } else if (a.status === "pending") {
     chip.textContent = "waiting for code…";
     chip.className = "chip chip-muted";
@@ -591,6 +628,7 @@ async function refresh() {
   el("version").textContent = "v" + S.version;
   renderAuth();
   renderAccounts();
+  renderDesktop();
   renderCooldown();
   renderAutomation();
   renderSettings();

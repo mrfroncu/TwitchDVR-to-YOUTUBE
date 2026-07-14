@@ -31,6 +31,11 @@
 </aside>
 
 <main>
+  <div id="update-banner" class="update-banner hidden">
+    <span>🚀 Version <b id="update-version"></b> is available!</span>
+    <button class="btn btn-accent sm" onclick="applyUpdate()">⬇ Update &amp; restart</button>
+    <button class="btn btn-ghost sm" onclick="el('update-banner').classList.add('hidden')">Later</button>
+  </div>
   <!-- ============================================================ VIDEOS -->
   <section id="view-videos" class="view">
     <header class="view-head">
@@ -270,7 +275,9 @@
         <div class="field-row">
           <span>Active channel</span>
           <select id="account-select" class="input" onchange="switchAccount()"></select>
-          <button class="btn btn-accent" onclick="connectYouTube()">➕ Connect another…</button>
+          <button class="btn btn-accent" onclick="connectYouTube()">➕ Connect (code)…</button>
+          <button id="browser-signin" class="btn hidden"
+                  onclick="api('/api/auth/browser')">🌐 Sign in with browser…</button>
           <button class="btn btn-ghost" onclick="api('/api/auth/signout')">Remove account</button>
           <span id="auth-status" class="chip chip-muted"></span>
         </div>
@@ -279,6 +286,17 @@
           target="_blank" rel="noopener">google.com/device</a>:
           <div id="device-code" class="code"></div>
         </div>
+      </div>
+    </div>
+    <div id="desktop-settings" class="card pad hidden">
+      <h2>Desktop interface</h2>
+      <div class="field-row">
+        <span>Interface</span>
+        <select id="set-ui-mode" class="input" onchange="saveUiMode()">
+          <option value="studio">Studio (this modern interface)</option>
+          <option value="classic">Classic (Tkinter window)</option>
+        </select>
+        <span class="muted">takes effect after restarting the app</span>
       </div>
     </div>
     <div class="card pad">
