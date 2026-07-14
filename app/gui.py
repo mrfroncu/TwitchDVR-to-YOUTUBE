@@ -219,9 +219,14 @@ class App:
             tree.tag_configure("error", foreground=c["err"])
             tree.tag_configure("uploading", foreground=c["info"])
             tree.tag_configure("odd_row", background=c["odd"])
-        for txt in (self.desc_text, self.log_text, self.auto_log_text):
+        for txt in (self.desc_text, self.log_text, self.auto_log_text,
+                    self.yt_desc_text, self.desc_template_text):
             txt.configure(bg=c["field_bg"], fg=c["fg"], insertbackground=c["fg"],
                           relief="flat", highlightthickness=0)
+        self.yt_pl_list.configure(bg=c["field_bg"], fg=c["fg"], relief="flat",
+                                  highlightthickness=0,
+                                  selectbackground=c["accent"],
+                                  selectforeground="#ffffff")
         self._set_titlebar_dark(theme == "dark")
         self._update_title_count()
 
@@ -611,7 +616,7 @@ class App:
 
         cols = ("check", "date", "title", "duration", "privacy", "views", "vstatus")
         self.yt_tree = ttk.Treeview(tab, columns=cols, show="headings",
-                                    selectmode="extended", height=16)
+                                    selectmode="extended", height=8)
         headings = {"check": (UNCHECKED, 36), "date": ("Published", 90),
                     "title": ("Title", 460), "duration": ("Length", 80),
                     "privacy": ("Privacy", 80), "views": ("Views", 80),
@@ -629,6 +634,7 @@ class App:
         ysb.place(in_=self.yt_tree, relx=1.0, rely=0, relheight=1.0, anchor="ne")
         self.yt_tree.bind("<Button-1>", self._on_yt_tree_click)
         self.yt_tree.bind("<Double-1>", lambda _e: self.yt_open_selected())
+        self.yt_tree.bind("<<TreeviewSelect>>", self._on_yt_select)
 
         act = ttk.LabelFrame(tab, text="Actions (apply to checked videos)")
         act.pack(fill="x", padx=8, pady=8)
@@ -657,6 +663,75 @@ class App:
                    command=self.yt_open_selected).pack(side="left")
         ttk.Button(row, text="🗑 Delete from YouTube",
                    command=self.yt_delete).pack(side="right")
+
+        # ---- full metadata editor for the selected video
+        ed = ttk.LabelFrame(tab, text="Video editor (click a video above to load it)")
+        ed.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        self.yt_edit_id: str | None = None
+        self.yt_memberships: list[dict] = []
+
+        row = ttk.Frame(ed)
+        row.pack(fill="x", padx=6, pady=(6, 2))
+        ttk.Label(row, text="Title:").pack(side="left")
+        self.yt_title_var = tk.StringVar()
+        self.yt_title_var.trace_add(
+            "write", lambda *_: self.yt_title_count.configure(
+                text=f"{len(self.yt_title_var.get())}/100"))
+        ttk.Entry(row, textvariable=self.yt_title_var).pack(
+            side="left", fill="x", expand=True, padx=6)
+        self.yt_title_count = ttk.Label(row, text="0/100", width=8)
+        self.yt_title_count.pack(side="left")
+        ttk.Button(row, text="💾 Save changes to YouTube", style="Accent.TButton",
+                   command=self.yt_save_video).pack(side="left", padx=(6, 0))
+
+        row = ttk.Frame(ed)
+        row.pack(fill="x", padx=6, pady=2)
+        ttk.Label(row, text="Tags:").pack(side="left")
+        self.yt_tags_var = tk.StringVar()
+        ttk.Entry(row, textvariable=self.yt_tags_var).pack(
+            side="left", fill="x", expand=True, padx=6)
+        ttk.Label(row, text="Privacy:").pack(side="left")
+        self.yt_edit_privacy_var = tk.StringVar(value="private")
+        ttk.Combobox(row, textvariable=self.yt_edit_privacy_var, width=9,
+                     state="readonly", values=("private", "unlisted", "public")
+                     ).pack(side="left", padx=(4, 8))
+        ttk.Label(row, text="Category:").pack(side="left")
+        self.yt_category_var = tk.StringVar(value="Gaming (20)")
+        self.yt_category_combo = ttk.Combobox(
+            row, textvariable=self.yt_category_var, width=22, state="readonly",
+            values=list(config.CATEGORIES))
+        self.yt_category_combo.pack(side="left", padx=4)
+
+        body = ttk.Frame(ed)
+        body.pack(fill="both", expand=True, padx=6, pady=(2, 6))
+        left = ttk.Frame(body)
+        left.pack(side="left", fill="both", expand=True)
+        ttk.Label(left, text="Description:").pack(anchor="w")
+        self.yt_desc_text = tk.Text(left, height=7, wrap="word", undo=True)
+        self.yt_desc_text.pack(fill="both", expand=True, pady=(2, 0))
+
+        right = ttk.Frame(body)
+        right.pack(side="left", fill="y", padx=(10, 0))
+        head = ttk.Frame(right)
+        head.pack(fill="x")
+        ttk.Label(head, text="In playlists:").pack(side="left")
+        ttk.Button(head, text="⟳ Check", width=8,
+                   command=self.yt_check_playlists).pack(side="right")
+        self.yt_pl_list = tk.Listbox(right, height=5, width=34,
+                                     activestyle="none", exportselection=False)
+        self.yt_pl_list.pack(fill="y", expand=True, pady=2)
+        row = ttk.Frame(right)
+        row.pack(fill="x")
+        ttk.Button(row, text="− Remove from playlist",
+                   command=self.yt_remove_from_playlist).pack(fill="x")
+        row = ttk.Frame(right)
+        row.pack(fill="x", pady=(4, 0))
+        self.yt_addpl_var = tk.StringVar()
+        self.yt_addpl_combo = ttk.Combobox(row, textvariable=self.yt_addpl_var,
+                                           width=24, state="readonly", values=[])
+        self.yt_addpl_combo.pack(side="left", fill="x", expand=True)
+        ttk.Button(row, text="＋ Add",
+                   command=self.yt_add_one_to_playlist).pack(side="left", padx=(4, 0))
 
     def _on_yt_tree_click(self, event):
         if self.yt_tree.identify("region", event.x, event.y) == "cell" and \
@@ -727,6 +802,151 @@ class App:
             self.events.put({"type": "log", "text": done_text.format(n=ok)})
             if reload_after and ok:
                 self.events.put({"type": "yt_reload"})
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    # -------------------------------------------------- manager video editor --
+    def _on_yt_select(self, _event=None) -> None:
+        sel = self.yt_tree.selection()
+        if len(sel) != 1 or sel[0] == self.yt_edit_id:
+            return
+        video_id = sel[0]
+        if self.credentials is None:
+            return
+        creds = self.credentials
+
+        def worker():
+            try:
+                video = ytmanager.get_video(auth.build_service(creds), video_id)
+                self.events.put({"type": "yt_video_detail", "video": video})
+            except Exception as exc:
+                self.events.put({"type": "log",
+                                 "text": "Could not load video details: "
+                                         + auth.describe_api_error(exc)})
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _load_yt_editor(self, video: dict) -> None:
+        self.yt_edit_id = video["id"]
+        self.yt_title_var.set(video["title"])
+        self.yt_tags_var.set(", ".join(video["tags"]))
+        self.yt_edit_privacy_var.set(video["privacy"])
+        inv = {v: k for k, v in config.CATEGORIES.items()}
+        label = inv.get(str(video["category_id"]),
+                        f"Category {video['category_id']}")
+        values = list(config.CATEGORIES)
+        if label not in values:
+            values.append(label)
+        self.yt_category_combo.configure(values=values)
+        self.yt_category_var.set(label)
+        self.yt_desc_text.delete("1.0", "end")
+        self.yt_desc_text.insert("1.0", video["description"])
+        self.yt_memberships = []
+        self.yt_pl_list.delete(0, "end")
+        self.yt_pl_list.insert("end", "(press ⟳ Check)")
+
+    def yt_save_video(self) -> None:
+        if not self.yt_edit_id:
+            messagebox.showinfo("My YouTube", "Select a video first.")
+            return
+        video_id = self.yt_edit_id
+        title = scanner.sanitize_title(self.yt_title_var.get())
+        description = self.yt_desc_text.get("1.0", "end-1c")[:4990]
+        tags = [t.strip() for t in self.yt_tags_var.get().split(",") if t.strip()]
+        privacy = self.yt_edit_privacy_var.get()
+        category = config.CATEGORIES.get(self.yt_category_var.get())
+        if category is None:   # dynamically added "Category NN" label
+            digits = "".join(ch for ch in self.yt_category_var.get() if ch.isdigit())
+            category = digits or "20"
+        creds = self.credentials
+
+        def worker():
+            try:
+                ytmanager.update_video(
+                    auth.build_service(creds), video_id, title=title,
+                    description=description, tags=tags,
+                    category_id=category, privacy=privacy)
+                self.events.put({"type": "log",
+                                 "text": f"Saved changes to '{title}' on YouTube."})
+                self.events.put({"type": "yt_row_update", "id": video_id,
+                                 "title": title, "privacy": privacy})
+            except Exception as exc:
+                self.events.put({"type": "log",
+                                 "text": "Saving to YouTube failed: "
+                                         + auth.describe_api_error(exc)})
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def yt_check_playlists(self) -> None:
+        if not self.yt_edit_id:
+            return
+        if not self.playlists:
+            self.refresh_playlists()
+            self._log("Playlists not loaded yet — refresh and press ⟳ Check again.")
+            return
+        video_id, creds = self.yt_edit_id, self.credentials
+        channel_playlists = list(self.playlists)
+        self.yt_pl_list.delete(0, "end")
+        self.yt_pl_list.insert("end", "checking…")
+
+        def worker():
+            try:
+                items = ytmanager.video_playlists(
+                    auth.build_service(creds), channel_playlists, video_id)
+                self.events.put({"type": "yt_memberships", "id": video_id,
+                                 "items": items})
+            except Exception as exc:
+                self.events.put({"type": "log",
+                                 "text": "Playlist check failed: "
+                                         + auth.describe_api_error(exc)})
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def yt_remove_from_playlist(self) -> None:
+        sel = self.yt_pl_list.curselection()
+        if not sel or sel[0] >= len(self.yt_memberships):
+            messagebox.showinfo("My YouTube", "Select a playlist in the list first "
+                                "(press ⟳ Check to load them).")
+            return
+        membership = self.yt_memberships[sel[0]]
+        creds = self.credentials
+
+        def worker():
+            try:
+                ytmanager.remove_from_playlist(auth.build_service(creds),
+                                               membership["item_id"])
+                self.events.put({"type": "log",
+                                 "text": f"Removed the video from playlist "
+                                         f"'{membership['title']}'."})
+                self.events.put({"type": "yt_recheck_playlists"})
+            except Exception as exc:
+                self.events.put({"type": "log",
+                                 "text": "Remove failed: "
+                                         + auth.describe_api_error(exc)})
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def yt_add_one_to_playlist(self) -> None:
+        if not self.yt_edit_id:
+            messagebox.showinfo("My YouTube", "Select a video first.")
+            return
+        title = self.yt_addpl_var.get()
+        pid = self.playlist_ids.get(title)
+        if not pid:
+            messagebox.showinfo("My YouTube", "Pick a playlist first.")
+            return
+        video_id, creds = self.yt_edit_id, self.credentials
+
+        def worker():
+            try:
+                playlists.add_to_playlist(auth.build_service(creds), pid, video_id)
+                self.events.put({"type": "log",
+                                 "text": f"Added the video to playlist '{title}'."})
+                self.events.put({"type": "yt_recheck_playlists"})
+            except Exception as exc:
+                self.events.put({"type": "log",
+                                 "text": "Add failed: "
+                                         + auth.describe_api_error(exc)})
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -860,6 +1080,23 @@ class App:
                   style="Muted.TLabel").pack(anchor="w", padx=8)
 
         row = ttk.Frame(up)
+        row.pack(fill="x", padx=8, pady=(6, 0))
+        ttk.Label(row, text="Description template:").pack(side="left")
+        ttk.Button(row, text="Reset to default", command=self._reset_desc_template
+                   ).pack(side="right")
+        self.desc_template_text = tk.Text(up, height=6, wrap="word", undo=True)
+        self.desc_template_text.pack(fill="x", padx=8, pady=(2, 0))
+        self.desc_template_text.insert(
+            "1.0", self.cfg.get("description_template")
+            or scanner.DEFAULT_DESCRIPTION_TEMPLATE)
+        ttk.Label(up, text="Placeholders: {title} {streamer} {login} {date} {duration} "
+                           "{game} {games} {chapters} (whole chapter block) {vod_id}. "
+                           "Lines whose placeholders are all empty are dropped "
+                           "automatically. Applies to newly scanned/reset videos.",
+                  style="Muted.TLabel", wraplength=980,
+                  justify="left").pack(anchor="w", padx=8, pady=(2, 0))
+
+        row = ttk.Frame(up)
         row.pack(fill="x", padx=8, pady=2)
         ttk.Label(row, text="After verified upload:").pack(side="left")
         inv_after = {v: k for k, v in config.AFTER_UPLOAD_CHOICES.items()}
@@ -954,11 +1191,14 @@ class App:
         self._log(f"Scanned {folder}: found {len(vods)} VOD folder(s).")
 
     def _generate_meta(self, vod: Vod) -> dict:
+        desc_tpl = (self.desc_template_text.get("1.0", "end-1c")
+                    if hasattr(self, "desc_template_text")
+                    else self.cfg.get("description_template"))
         return {
             "title": scanner.build_title(vod, self.template_var.get()
                                          if hasattr(self, "template_var")
                                          else self.cfg["title_template"]),
-            "description": scanner.build_description(vod),
+            "description": scanner.build_description(vod, desc_tpl or None),
             "tags": ", ".join(scanner.build_tags(vod)),
             "privacy": self.cfg["privacy"],
             "playlist_choice": "(default)",
@@ -1155,8 +1395,11 @@ class App:
         self.bulk_playlist_combo.configure(values=values)
         self.pl_fixed_combo.configure(values=titles)
         self.mgr_playlist_combo.configure(values=titles)
+        self.yt_addpl_combo.configure(values=titles)
         if titles and self.mgr_playlist_var.get() not in titles:
             self.mgr_playlist_var.set(titles[0])
+        if titles and self.yt_addpl_var.get() not in titles:
+            self.yt_addpl_var.set(titles[0])
 
     def _resolve_playlist_spec(self, key: str) -> dict | None:
         """What playlist (if any) an enqueued video should end up in."""
@@ -1228,6 +1471,9 @@ class App:
             self.playlist_tree.heading(col, text=text)
             self.playlist_tree.column(col, width=width, anchor=anchor)
         self.playlist_tree.pack(fill="both", expand=True, padx=10, pady=4)
+        self.playlist_tree.bind("<Double-1>", self._open_playlist_in_browser)
+        ttk.Label(tab, text="Double-click a playlist to open it on YouTube.",
+                  style="Muted.TLabel").pack(anchor="w", padx=10)
 
         rule = ttk.LabelFrame(
             tab, text="Default playlist for uploads (per-video override on the Videos tab)")
@@ -1264,6 +1510,15 @@ class App:
                        "(create = 50 quota units, adding a video = 50 units).",
                   style="Muted.TLabel", wraplength=1000, justify="left"
                   ).pack(anchor="w", padx=8, pady=(2, 8))
+
+    def _open_playlist_in_browser(self, _event=None) -> None:
+        sel = self.playlist_tree.selection()
+        if not sel:
+            return
+        values = self.playlist_tree.item(sel[0], "values")
+        if len(values) >= 4 and values[3]:
+            import webbrowser
+            webbrowser.open(f"https://www.youtube.com/playlist?list={values[3]}")
 
     def _playlist_rule_changed(self) -> None:
         self.cfg["playlist_mode"] = self.pl_mode_var.get()
@@ -1878,6 +2133,25 @@ class App:
                 text=f"{len(self.yt_videos)} video(s)" if items is not None else "")
         elif etype == "yt_reload":
             self.load_yt_videos()
+        elif etype == "yt_video_detail":
+            self._load_yt_editor(ev["video"])
+        elif etype == "yt_memberships":
+            if ev["id"] == self.yt_edit_id:
+                self.yt_memberships = ev["items"]
+                self.yt_pl_list.delete(0, "end")
+                if not self.yt_memberships:
+                    self.yt_pl_list.insert("end", "(not in any playlist)")
+                for m in self.yt_memberships:
+                    self.yt_pl_list.insert("end", m["title"])
+        elif etype == "yt_recheck_playlists":
+            self.yt_check_playlists()
+        elif etype == "yt_row_update":
+            if self.yt_tree.exists(ev["id"]):
+                self.yt_tree.set(ev["id"], "title", ev["title"])
+                self.yt_tree.set(ev["id"], "privacy", ev["privacy"])
+            for v in self.yt_videos:
+                if v["id"] == ev["id"]:
+                    v["title"], v["privacy"] = ev["title"], ev["privacy"]
         elif etype == "update":
             self._handle_update_event(ev)
         elif etype == "update_ready":
@@ -1951,6 +2225,13 @@ class App:
             self.queue_tree.set(item.key, "status", item.status)
 
     # -------------------------------------------------------------- settings --
+    def _reset_desc_template(self) -> None:
+        self.desc_template_text.delete("1.0", "end")
+        self.desc_template_text.insert("1.0", scanner.DEFAULT_DESCRIPTION_TEMPLATE)
+        self.cfg["description_template"] = ""
+        config.save_config(self.cfg)
+        self._log("Description template reset to the default format.")
+
     def _pick_secret(self) -> None:
         path = filedialog.askopenfilename(
             title="Pick client_secret_*.json",
@@ -1968,6 +2249,9 @@ class App:
         self.cfg["privacy"] = self.def_privacy_var.get()
         self.cfg["category_id"] = config.CATEGORIES.get(self.category_var.get(), "20")
         self.cfg["title_template"] = self.template_var.get() or config.DEFAULTS["title_template"]
+        desc_tpl = self.desc_template_text.get("1.0", "end-1c").strip("\n")
+        self.cfg["description_template"] = (
+            "" if desc_tpl == scanner.DEFAULT_DESCRIPTION_TEMPLATE else desc_tpl)
         self.cfg["notify_subscribers"] = bool(self.notify_var.get())
         self.cfg["made_for_kids"] = bool(self.kids_var.get())
         self.cfg["after_upload"] = config.AFTER_UPLOAD_CHOICES.get(

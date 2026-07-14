@@ -207,6 +207,11 @@
         <input id="set-template" class="input grow" onchange="saveSettings()">
       </div>
       <p class="muted">Placeholders: {title} {streamer} {login} {date} {game} {games}</p>
+      <label>Description template (empty = built-in default)</label>
+      <textarea id="set-desc-template" class="input" rows="6" spellcheck="false"
+                style="width:100%" onchange="saveSettings()"></textarea>
+      <p class="muted">Placeholders: {title} {streamer} {login} {date} {duration} {game}
+        {games} {chapters} {vod_id}. Lines whose placeholders are all empty are dropped.</p>
       <label class="switch-row"><input type="checkbox" id="set-notify"
         onchange="saveSettings()"><span>Notify subscribers on upload</span></label>
       <label class="switch-row"><input type="checkbox" id="set-kids"

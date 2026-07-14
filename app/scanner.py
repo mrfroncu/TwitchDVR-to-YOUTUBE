@@ -291,27 +291,48 @@ def chapter_lines(vod: Vod) -> list[str]:
     return [f"{_fmt_offset(off)} {label}" for off, label in filtered]
 
 
-def build_description(vod: Vod) -> str:
-    lines: list[str] = [vod.stream_title, ""]
-    who = vod.streamer_name or vod.streamer_login or "unknown"
-    when = f" on {vod.date_str}" if vod.date_str else ""
-    lines.append(f"Streamed live by {who} on Twitch{when}.")
-    if vod.streamer_login:
-        lines.append(f"https://www.twitch.tv/{vod.streamer_login}")
-    if vod.duration:
-        lines.append(f"Stream length: {_fmt_duration(vod.duration)}")
-    if vod.games:
-        lines.append("Games: " + ", ".join(vod.games))
+DEFAULT_DESCRIPTION_TEMPLATE = (
+    "{title}\n"
+    "\n"
+    "Streamed live by {streamer} on Twitch on {date}.\n"
+    "https://www.twitch.tv/{login}\n"
+    "Stream length: {duration}\n"
+    "Games: {games}\n"
+    "\n"
+    "{chapters}\n"
+    "\n"
+    "Original Twitch VOD ID: {vod_id}"
+)
 
+
+def build_description(vod: Vod, template: str | None = None) -> str:
+    """Render the description template. Template lines whose placeholders all
+    turn out empty are dropped, so optional data doesn't leave stubs."""
     ch_lines = chapter_lines(vod)
-    if ch_lines:
-        lines += ["", "Chapters:"]
-        lines += ch_lines
-
-    if vod.twitch_vod_id:
-        lines += ["", f"Original Twitch VOD ID: {vod.twitch_vod_id}"]
-
-    desc = "\n".join(lines).replace("<", "").replace(">", "")
+    values = {
+        "title": vod.stream_title,
+        "streamer": vod.streamer_name or vod.streamer_login or "unknown",
+        "login": vod.streamer_login,
+        "date": vod.date_str,
+        "duration": _fmt_duration(vod.duration) if vod.duration else "",
+        "games": ", ".join(vod.games),
+        "game": vod.games[0] if vod.games else "",
+        "chapters": ("Chapters:\n" + "\n".join(ch_lines)) if ch_lines else "",
+        "vod_id": vod.twitch_vod_id or "",
+    }
+    tpl = (template or "").strip("\n") or DEFAULT_DESCRIPTION_TEMPLATE
+    safe = _SafeDict(values)
+    rendered: list[str] = []
+    for line in tpl.splitlines():
+        keys = [k for k in re.findall(r"\{(\w+)\}", line) if k in values]
+        if keys and all(values[k] == "" for k in keys):
+            continue
+        try:
+            rendered.append(line.format_map(safe))
+        except (ValueError, IndexError):
+            rendered.append(line)
+    desc = re.sub(r"\n{3,}", "\n\n", "\n".join(rendered)).strip()
+    desc = desc.replace("<", "").replace(">", "")
     if len(desc) > MAX_DESC_LEN:
         desc = desc[:MAX_DESC_LEN]
     return desc
