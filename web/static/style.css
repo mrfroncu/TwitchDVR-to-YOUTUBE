@@ -282,5 +282,66 @@ th.sortable:hover { color: var(--fg); }
   padding: 10px 20px; border-radius: 10px; z-index: 90;
   box-shadow: 0 8px 30px rgba(0, 0, 0, .5);
   animation: slide-in .2s ease;
+  max-width: 92vw;
 }
 .toast.ok { background: #16321d; color: var(--ok); border-color: #2b5c33; }
+
+/* ============================================================== mobile == */
+button, .nav-btn, .input { touch-action: manipulation; }
+
+@media (max-width: 900px) {
+  body { display: block; }
+
+  /* sidebar becomes a fixed bottom navigation bar */
+  .sidebar {
+    position: fixed; bottom: 0; left: 0; right: 0; z-index: 60;
+    flex-direction: row; align-items: center;
+    height: 64px; padding: 4px 6px; gap: 4px;
+    border-right: 0; border-top: 1px solid var(--border);
+    background: rgba(18, 22, 31, .96);
+    backdrop-filter: blur(12px);
+  }
+  .logo, .sidebar-foot { display: none; }
+  nav { flex-direction: row; flex: 1; justify-content: space-around; gap: 2px; }
+  .nav-btn {
+    position: relative; flex-direction: column; align-items: center;
+    gap: 1px; padding: 6px 6px; font-size: 19px; flex: 1; min-width: 0;
+  }
+  .nav-btn span { font-size: 9.5px; letter-spacing: 0; }
+  .nav-btn .badge { position: absolute; top: 2px; right: 8px; margin: 0; }
+
+  main { padding: 14px 12px 150px; }
+  h1 { font-size: 19px; }
+  .view-head { flex-direction: column; align-items: stretch; gap: 10px; }
+  .toolbar .grow { min-width: 100%; }
+  .card.pad { padding: 14px; }
+  .bulkbar { padding: 10px; gap: 5px; }
+  .bulkbar .sep { display: none; }
+
+  /* tables scroll horizontally instead of crushing columns */
+  #videos-table, #yt-table { min-width: 780px; }
+  #playlists-table { min-width: 560px; }
+  table { font-size: 12.5px; }
+  thead th { padding: 9px 8px; }
+  tbody td { padding: 8px 8px; }
+
+  /* queue items flow instead of a rigid grid */
+  .q-item { display: flex; flex-wrap: wrap; gap: 8px; padding: 11px 12px; }
+  .q-item > div:first-child { display: none; }   /* position number */
+  .q-item > div[style] { flex: 1 1 100%; min-width: 0; }
+  .q-progress { flex: 1 1 100%; order: 10; }
+
+  /* editors take the whole screen */
+  .editor { width: 100vw; padding: 16px; }
+
+  /* activity log sits above the bottom nav */
+  .logbar { position: fixed; bottom: 64px; left: 0; right: 0; z-index: 59;
+            background: rgba(18, 22, 31, .96); backdrop-filter: blur(12px); }
+  .log-lines { max-height: 38vh; }
+
+  .update-banner { flex-wrap: wrap; }
+  .device-code .code { font-size: 22px; letter-spacing: 4px; word-break: break-all; }
+  .field-row { gap: 8px; }
+  .field-row .input.grow { flex: 1 1 100%; }
+  textarea.input { width: 100%; }
+}
