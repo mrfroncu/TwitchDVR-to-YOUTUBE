@@ -36,34 +36,38 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
-exe = EXE(
-    pyz,
-    a.scripts,
-    a.binaries,
-    a.datas,
-    [],
-    name="TwitchDVR-to-YouTube",
-    icon=os.path.join(spec_dir, "assets", "icon.ico")
-        if sys.platform == "win32" else None,
-    debug=False,
-    bootloader_ignore_signals=False,
-    strip=False,
-    upx=False,               # UPX-packed exes trip antivirus heuristics
-    upx_exclude=[],
-    runtime_tmpdir=None,
-    console=False,           # windowed app, no console window
-    disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
-)
-
 if sys.platform == "darwin":
-    app = BUNDLE(
+    # onedir .app bundle: no onefile bootloader child process, so macOS shows
+    # a single Dock icon (the .icns one) instead of two.
+    exe = EXE(
+        pyz,
+        a.scripts,
+        [],
+        exclude_binaries=True,
+        name="TwitchDVR-to-YouTube",
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=False,
+        console=False,
+        disable_windowed_traceback=False,
+        argv_emulation=False,
+        target_arch=None,
+        codesign_identity=None,
+        entitlements_file=None,
+    )
+    coll = COLLECT(
         exe,
+        a.binaries,
+        a.datas,
+        strip=False,
+        upx=False,
+        name="TwitchDVR-to-YouTube",
+    )
+    app = BUNDLE(
+        coll,
         name="TwitchDVR-to-YouTube.app",
-        icon=None,
+        icon=os.path.join(spec_dir, "assets", "icon.icns"),
         bundle_identifier="com.froncu.twitchdvr2yt",
         version=__version__,
         info_plist={
@@ -71,4 +75,27 @@ if sys.platform == "darwin":
             "LSMinimumSystemVersion": "11.0",
             "CFBundleDisplayName": "TwitchDVR to YouTube",
         },
+    )
+else:
+    exe = EXE(
+        pyz,
+        a.scripts,
+        a.binaries,
+        a.datas,
+        [],
+        name="TwitchDVR-to-YouTube",
+        icon=os.path.join(spec_dir, "assets", "icon.ico")
+            if sys.platform == "win32" else None,
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=False,               # UPX-packed exes trip antivirus heuristics
+        upx_exclude=[],
+        runtime_tmpdir=None,
+        console=False,           # windowed app, no console window
+        disable_windowed_traceback=False,
+        argv_emulation=False,
+        target_arch=None,
+        codesign_identity=None,
+        entitlements_file=None,
     )
