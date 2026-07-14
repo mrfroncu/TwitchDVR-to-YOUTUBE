@@ -12,9 +12,6 @@ concurrency:
   group: release
   cancel-in-progress: false
 
-env:
-  VERSION: 1.0.${{ github.run_number }}
-
 jobs:
   build-windows:
     runs-on: windows-latest
@@ -28,7 +25,9 @@ jobs:
       - name: Stamp version into app
         shell: pwsh
         run: |
-          "__version__ = `"$env:VERSION`"" | Set-Content -Path app/version.py -Encoding utf8
+          $v = (Get-Content VERSION -Raw).Trim()
+          "VERSION=$v" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "__version__ = `"$v`"" | Set-Content -Path app/version.py -Encoding utf8
 
       - name: Install dependencies
         run: |
@@ -63,7 +62,10 @@ jobs:
           python-version: "3.13"
 
       - name: Stamp version into app
-        run: printf '__version__ = "%s"\n' "$VERSION" > app/version.py
+        run: |
+          VERSION=$(tr -d ' \n' < VERSION)
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          printf '__version__ = "%s"\n' "$VERSION" > app/version.py
 
       - name: Install dependencies
         run: |
@@ -95,18 +97,31 @@ jobs:
     needs: [build-windows, build-macos]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
 
-      - name: List artifacts
-        run: ls -la artifacts
+      - name: Read version and extract changelog notes
+        run: |
+          VERSION=$(tr -d ' \n' < VERSION)
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          awk -v ver="$VERSION" \
+            '$0 ~ "^## "ver{flag=1; next} /^## /{if (flag) exit} flag' \
+            CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "_No changelog entry for $VERSION — see CHANGELOG.md._" > release-notes.md
+          fi
+          echo "--- release notes ---"
+          cat release-notes.md
+          ls -la artifacts
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ env.VERSION }}
           name: TwitchDVR-to-YouTube v${{ env.VERSION }}
-          generate_release_notes: true
+          body_path: release-notes.md
           files: artifacts/*

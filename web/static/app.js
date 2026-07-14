@@ -260,11 +260,15 @@ function renderQueue() {
       </div>
       <span class="q-status ${q.status}">${q.status}${q.status === "uploading" ? " " + q.progress + "%" : ""}</span>
       <div class="q-arrows">
+        ${q.video_id ? `<button class="btn btn-ghost sm" data-open title="Open on YouTube">🌐</button>` : ""}
         <button class="btn btn-ghost sm" data-d="-1">▲</button>
         <button class="btn btn-ghost sm" data-d="1">▼</button>
       </div>
       <button class="btn btn-ghost sm" data-rm>✕</button>
       <div class="q-progress"><div style="width:${q.progress || 0}%"></div></div>`;
+    const openBtn = div.querySelector("[data-open]");
+    if (openBtn) openBtn.addEventListener("click", () =>
+      window.open("https://youtu.be/" + q.video_id));
     div.querySelectorAll("[data-d]").forEach(b => b.addEventListener("click", () =>
       api("/api/queue/move", { key: q.key, delta: parseInt(b.dataset.d) })));
     div.querySelector("[data-rm]").addEventListener("click", () =>

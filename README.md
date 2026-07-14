@@ -229,9 +229,11 @@ edit the volume paths afterwards.
 ## Building the exe / releases
 
 Every push to `main` triggers the [Build & Release workflow](.github/workflows/release.yml):
-it builds the Windows exe and the macOS `.app`/`.dmg` (Apple Silicon, plus Intel as a
-best-effort job) with PyInstaller and publishes a GitHub release tagged `v1.0.<build number>`
-with all binaries attached and auto-generated notes.
+it builds the Windows exe and the macOS `.app`/`.dmg` (Apple Silicon) with PyInstaller and
+publishes a GitHub release. **Versioning**: the release tag comes from the
+[`VERSION`](VERSION) file and the release notes are the matching section of
+[`CHANGELOG.md`](CHANGELOG.md) — to cut a release, bump `VERSION`, add a changelog
+section, and push. Pushing without bumping updates the existing release's assets.
 
 To build locally (on the OS you're building for):
 
