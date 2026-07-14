@@ -14,7 +14,9 @@ from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app import auth, config, limits, playlists, scanner
+import json as _json
+
+from app import auth, config, limits, playlists, scanner, ytmanager
 from app.scanner import Vod
 from app.uploader import QueueItem, UploadWorker, verify_video
 from app.version import __version__
@@ -125,6 +127,91 @@ class Controller:
             self.log("Signed in, but the channel lookup failed: "
                      + auth.describe_api_error(exc))
         self.refresh_playlists()
+
+    def set_client_secret(self, content: str) -> str:
+        """Accept an uploaded client_secret*.json (as text) from the browser."""
+        try:
+            data = _json.loads(content)
+        except ValueError:
+            raise RuntimeError("that file is not valid JSON")
+        section = data.get("installed") or data.get("web") or {}
+        client_id = section.get("client_id", "")
+        client_secret = section.get("client_secret", "")
+        if not client_id or not client_secret:
+            raise RuntimeError("no client_id/client_secret found in the file — "
+                               "upload the JSON downloaded from Google Cloud "
+                               "Console → Credentials")
+        with self.lock:
+            self.cfg["client_id"] = client_id
+            self.cfg["client_secret"] = client_secret
+            config.save_config(self.cfg)
+        self.log("OAuth client imported from the uploaded JSON. Note: the web "
+                 "version needs a client of type “TVs and Limited Input "
+                 "devices” — a Desktop client will be rejected at sign-in.")
+        return client_id
+
+    # ------------------------------------------------------------ yt manager
+    def _service(self):
+        if self.credentials is None:
+            raise RuntimeError("not signed in to YouTube")
+        return auth.build_service(self.credentials)
+
+    def yt_list(self) -> list[dict]:
+        return ytmanager.list_channel_videos(self._service())
+
+    def yt_video(self, video_id: str) -> dict:
+        return ytmanager.get_video(self._service(), video_id)
+
+    def yt_update(self, video_id: str, patch: dict) -> None:
+        current = ytmanager.get_video(self._service(), video_id)
+        merged = {**current, **{k: v for k, v in patch.items() if v is not None}}
+        tags = merged["tags"]
+        if isinstance(tags, str):
+            tags = [t.strip() for t in tags.split(",") if t.strip()]
+        ytmanager.update_video(
+            self._service(), video_id,
+            title=scanner.sanitize_title(str(merged["title"])),
+            description=str(merged["description"])[:4990],
+            tags=tags,
+            category_id=str(merged["category_id"]),
+            privacy=str(merged["privacy"]))
+        self.log(f"Saved changes to video {video_id} on YouTube.")
+
+    def yt_video_playlists(self, video_id: str) -> list[dict]:
+        with self.lock:
+            channel_playlists = list(self.playlists)
+        return ytmanager.video_playlists(self._service(), channel_playlists,
+                                         video_id)
+
+    def yt_playlist_add(self, video_id: str, playlist_id: str) -> None:
+        playlists.add_to_playlist(self._service(), playlist_id, video_id)
+        self.log(f"Added video {video_id} to a playlist.")
+
+    def yt_playlist_remove(self, item_id: str) -> None:
+        ytmanager.remove_from_playlist(self._service(), item_id)
+        self.log("Removed the video from the playlist.")
+
+    def yt_bulk(self, action: str, ids: list[str], value: str = "") -> dict:
+        service = self._service()
+        ok = 0
+        errors: list[str] = []
+        for vid in ids:
+            try:
+                if action == "privacy":
+                    ytmanager.set_privacy(service, vid, value)
+                elif action == "playlist":
+                    playlists.add_to_playlist(service, value, vid)
+                elif action == "delete":
+                    ytmanager.delete_video(service, vid)
+                else:
+                    raise RuntimeError(f"unknown action {action}")
+                ok += 1
+            except Exception as exc:
+                errors.append(f"{vid}: {auth.describe_api_error(exc)[:120]}")
+        self.log(f"YT manager: {action} applied to {ok}/{len(ids)} video(s).")
+        for err in errors[:3]:
+            self.log(err)
+        return {"ok": ok, "errors": errors}
 
     def start_sign_in(self) -> dict:
         client_id, client_secret = deviceauth.read_client_from_config(self.cfg)

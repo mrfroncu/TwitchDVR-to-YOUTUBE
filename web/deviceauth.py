@@ -42,6 +42,15 @@ def read_client_from_config(cfg: dict) -> tuple[str, str]:
         "config directory.")
 
 
+WRONG_CLIENT_TYPE_MSG = (
+    "This OAuth client is the wrong type for the web version. The device "
+    "sign-in requires a client of type “TVs and Limited Input devices” — a "
+    "“Desktop app” client (the one the desktop version uses) will not work "
+    "here. In Google Cloud Console open APIs & Services → Credentials → "
+    "Create credentials → OAuth client ID → choose “TVs and Limited Input "
+    "devices”, then upload/paste that client here.")
+
+
 def start(client_id: str) -> dict:
     """Begin the flow: returns user_code / verification_url / device_code."""
     resp = requests.post(DEVICE_CODE_URL, data={
@@ -49,7 +58,10 @@ def start(client_id: str) -> dict:
         "scope": " ".join(SCOPES),
     }, timeout=30)
     if resp.status_code != 200:
-        raise RuntimeError(f"device code request failed: {resp.text[:300]}")
+        text = resp.text[:400]
+        if "invalid_client" in text or "Invalid client type" in text:
+            raise RuntimeError(WRONG_CLIENT_TYPE_MSG)
+        raise RuntimeError(f"device code request failed: {text}")
     return resp.json()
 
 

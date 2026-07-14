@@ -36,12 +36,34 @@ async function api(path, body = null, method = null) {
   const resp = await fetch(path, opts);
   let data = {};
   try { data = await resp.json(); } catch (e) { /* empty */ }
+  if (resp.status === 401) { showLogin(true); throw new Error("auth"); }
   if (!resp.ok) {
     toast(data.error || data.detail || `Request failed (${resp.status})`);
     throw new Error("api error");
   }
   refresh();
   return data;
+}
+
+/* -------------------------------------------------------------- login */
+function showLogin(on) {
+  el("login-overlay").classList.toggle("hidden", !on);
+  if (on) el("login-password").focus();
+}
+async function doLogin() {
+  const resp = await fetch("/api/login", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password: el("login-password").value }),
+  });
+  if (resp.ok) {
+    el("login-password").value = "";
+    el("login-error").textContent = "";
+    showLogin(false);
+    refresh();
+    pollEvents();
+  } else {
+    el("login-error").textContent = "Wrong password — try again.";
+  }
 }
 
 /* --------------------------------------------------------------- nav */
@@ -55,6 +77,20 @@ document.querySelectorAll(".nav-btn").forEach(btn => {
 });
 
 /* ------------------------------------------------------------ videos */
+let vodsSort = { col: "", rev: false };
+function sortVods(col) {
+  vodsSort = { col, rev: vodsSort.col === col && !vodsSort.rev };
+  lastVodsJson = "";      // force re-render
+  renderVideos();
+}
+function vodsSorted() {
+  if (!vodsSort.col) return S.vods;
+  const c = vodsSort.col;
+  const key = (v) => (c === "size" || c === "duration" || c === "chapters")
+    ? (v[c] || 0) : String(v[c] ?? "").toLowerCase();
+  return [...S.vods].sort((a, b) =>
+    (key(a) > key(b) ? 1 : key(a) < key(b) ? -1 : 0) * (vodsSort.rev ? -1 : 1));
+}
 function statusClass(st) {
   if (st.startsWith("uploaded")) return "st-ok";
   if (st.includes("failed") || st.includes("no video")) return "st-err";
@@ -64,7 +100,7 @@ function statusClass(st) {
 function renderVideos() {
   const tbody = el("videos-table").querySelector("tbody");
   tbody.innerHTML = "";
-  for (const v of S.vods) {
+  for (const v of vodsSorted()) {
     const tr = document.createElement("tr");
     if (checked.has(v.key)) tr.classList.add("checked");
     tr.innerHTML = `
@@ -269,6 +305,170 @@ async function createPlaylist() {
   await api("/api/playlists/create", { title, privacy: el("new-pl-privacy").value });
 }
 
+/* --------------------------------------------------------- my youtube */
+let ytVideos = [];
+let ytChecked = new Set();
+let ytSort = { col: "", rev: false };
+let ytEditorId = null;
+let ytMemberships = [];
+
+async function loadYt() {
+  el("yt-count").textContent = "loading…";
+  try {
+    const data = await api("/api/yt/videos", null, "GET");
+    ytVideos = data.videos || [];
+    ytChecked = new Set([...ytChecked].filter(id => ytVideos.some(v => v.id === id)));
+    el("yt-count").textContent = `${ytVideos.length} video(s)`;
+    renderYt();
+  } catch (e) { el("yt-count").textContent = ""; }
+}
+function sortYt(col) {
+  ytSort = { col, rev: ytSort.col === col && !ytSort.rev };
+  const key = (v) => col === "views" ? v.views
+    : col === "duration" ? durSeconds(v.duration)
+    : String(v[col] ?? "").toLowerCase();
+  ytVideos.sort((a, b) =>
+    (key(a) > key(b) ? 1 : key(a) < key(b) ? -1 : 0) * (ytSort.rev ? -1 : 1));
+  renderYt();
+}
+function durSeconds(t) {
+  return String(t || "").split(":").reduce((acc, p) => acc * 60 + (parseInt(p) || 0), 0);
+}
+function renderYt() {
+  const tbody = el("yt-table").querySelector("tbody");
+  tbody.innerHTML = "";
+  for (const v of ytVideos) {
+    const tr = document.createElement("tr");
+    if (ytChecked.has(v.id)) tr.classList.add("checked");
+    const stClass = ["failed", "rejected"].includes(v.upload_status) ? "st-err"
+      : v.privacy === "public" ? "st-ok" : "";
+    tr.innerHTML = `
+      <td><input type="checkbox" ${ytChecked.has(v.id) ? "checked" : ""}></td>
+      <td>${esc(v.published)}</td>
+      <td>${esc(v.title)}</td>
+      <td>${esc(v.duration)}</td>
+      <td>${esc(v.privacy)}</td>
+      <td>${v.views.toLocaleString()}</td>
+      <td class="${stClass}">${esc(v.upload_status)}</td>`;
+    tr.querySelector("input").addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (e.target.checked) ytChecked.add(v.id); else ytChecked.delete(v.id);
+      tr.classList.toggle("checked", e.target.checked);
+    });
+    tr.addEventListener("click", () => openYtEditor(v.id));
+    tr.addEventListener("dblclick", () => window.open("https://youtu.be/" + v.id));
+    tbody.appendChild(tr);
+  }
+  fillSelect(el("yt-bulk-playlist"), S.playlists.map(p => p.title),
+             el("yt-bulk-playlist").value);
+  fillSelect(el("yt-add-playlist"), S.playlists.map(p => p.title),
+             el("yt-add-playlist").value);
+}
+function ytCheckAll(on) {
+  ytChecked = on ? new Set(ytVideos.map(v => v.id)) : new Set();
+  renderYt();
+}
+async function ytBulk(action) {
+  if (!ytChecked.size) { toast("Nothing checked."); return; }
+  let value = "";
+  if (action === "playlist") {
+    const pl = S.playlists.find(p => p.title === el("yt-bulk-playlist").value);
+    if (!pl) { toast("Pick a playlist first."); return; }
+    value = pl.id;
+  }
+  if (action === "privacy") value = el("yt-bulk-privacy").value;
+  if (action === "delete" && !confirm(
+      `PERMANENTLY delete ${ytChecked.size} video(s) from YouTube?\n` +
+      `This cannot be undone!`)) return;
+  const res = await api("/api/yt/bulk", { action, keys: [...ytChecked], value });
+  toast(`Applied to ${res.ok}/${ytChecked.size} video(s).`, true);
+  loadYt();
+}
+async function openYtEditor(id) {
+  try {
+    const v = await api(`/api/yt/video/${encodeURIComponent(id)}`, null, "GET");
+    ytEditorId = id;
+    el("yt-ed-title").value = v.title;
+    el("yt-ed-tags").value = (v.tags || []).join(", ");
+    el("yt-ed-privacy").value = v.privacy;
+    const cat = el("yt-ed-category");
+    if (![...cat.options].some(o => o.value === String(v.category_id))) {
+      const o = document.createElement("option");
+      o.value = String(v.category_id);
+      o.textContent = "Category " + v.category_id;
+      cat.appendChild(o);
+    }
+    cat.value = String(v.category_id);
+    el("yt-ed-desc").value = v.description;
+    el("yt-title-count").textContent = `${v.title.length}/100`;
+    ytMemberships = [];
+    el("yt-memberships").innerHTML = `<span class="muted">(press ⟳ Check)</span>`;
+    el("yt-editor").classList.remove("hidden");
+  } catch (e) { /* toast already shown */ }
+}
+function closeYtEditor() { ytEditorId = null; el("yt-editor").classList.add("hidden"); }
+el("yt-ed-title").addEventListener("input", () =>
+  el("yt-title-count").textContent = `${el("yt-ed-title").value.length}/100`);
+async function saveYtEditor() {
+  if (!ytEditorId) return;
+  await api(`/api/yt/video/${encodeURIComponent(ytEditorId)}`, {
+    title: el("yt-ed-title").value,
+    tags: el("yt-ed-tags").value,
+    privacy: el("yt-ed-privacy").value,
+    category_id: el("yt-ed-category").value,
+    description: el("yt-ed-desc").value,
+  }, "PATCH");
+  toast("Saved to YouTube.", true);
+  loadYt();
+}
+async function ytCheckMemberships() {
+  if (!ytEditorId) return;
+  el("yt-memberships").innerHTML = `<span class="muted">checking…</span>`;
+  const data = await api(`/api/yt/video/${encodeURIComponent(ytEditorId)}/playlists`,
+                         null, "GET");
+  ytMemberships = data.playlists || [];
+  const box = el("yt-memberships");
+  box.innerHTML = ytMemberships.length ? ""
+    : `<span class="muted">(not in any playlist)</span>`;
+  for (const m of ytMemberships) {
+    const row = document.createElement("div");
+    row.className = "pl-row";
+    row.innerHTML = `<span>${esc(m.title)}</span>
+      <button class="btn btn-ghost sm" title="Remove from playlist">✕</button>`;
+    row.querySelector("button").addEventListener("click", async () => {
+      await api("/api/yt/playlist_item/remove", { item_id: m.item_id });
+      ytCheckMemberships();
+    });
+    box.appendChild(row);
+  }
+}
+async function ytAddToPlaylist() {
+  if (!ytEditorId) return;
+  const pl = S.playlists.find(p => p.title === el("yt-add-playlist").value);
+  if (!pl) { toast("Pick a playlist first."); return; }
+  await api(`/api/yt/video/${encodeURIComponent(ytEditorId)}/playlists`,
+            { playlist_id: pl.id });
+  toast("Added to playlist.", true);
+  ytCheckMemberships();
+}
+
+/* --------------------------------------------------------- secret file */
+el("secret-file").addEventListener("change", () => {
+  const file = el("secret-file").files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = async () => {
+    try {
+      const res = await api("/api/auth/secret", { content: reader.result });
+      el("secret-status").textContent = "Imported client " +
+        (res.client_id || "").slice(0, 18) + "…";
+      toast("OAuth client imported.", true);
+    } catch (e) { /* toast shown */ }
+    el("secret-file").value = "";
+  };
+  reader.readAsText(file);
+});
+
 /* ------------------------------------------------------------- auth */
 function renderAuth() {
   const a = S.auth;
@@ -363,8 +563,9 @@ function toggleLog() { el("logbar").classList.toggle("open"); }
 async function pollEvents() {
   try {
     const resp = await fetch(`/api/events?since=${lastSeq}`);
+    if (resp.status === 401) return;
     const data = await resp.json();
-    if (data.events.length) {
+    if (data.events && data.events.length) {
       const box = el("log-lines");
       for (const e of data.events) {
         lastSeq = Math.max(lastSeq, e.seq);
@@ -381,8 +582,10 @@ async function pollEvents() {
 
 /* ------------------------------------------------------------ poller */
 async function refresh() {
+  let resp;
   try {
-    const resp = await fetch("/api/state");
+    resp = await fetch("/api/state");
+    if (resp.status === 401) { showLogin(true); return; }
     S = await resp.json();
   } catch (e) { return; }
   el("version").textContent = "v" + S.version;
