@@ -4,6 +4,19 @@ Release versions come from the `VERSION` file; each release's notes are the
 matching section of this file. Bump `VERSION` and add a section here to cut
 a new release.
 
+## 2.1.0 — 2026-07-15
+
+### 📱 Mobile
+- The web/Docker interface is now fully responsive: the sidebar becomes a
+  bottom navigation bar with icon tabs, tables scroll horizontally instead
+  of crushing, queue items reflow, editors open full-screen, and the
+  activity log docks above the navigation. Touch targets enlarged and
+  double-tap zoom disabled on controls.
+
+### 🐳 Docker
+- The web version now shows the real release version (read from the
+  `VERSION` file) instead of `0.0.0-dev` on rsync-deployed servers.
+
 ## 2.0.0 — 2026-07-15
 
 The "Studio" milestone — a new interface, a much faster uploader, and a
