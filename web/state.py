@@ -826,6 +826,7 @@ class Controller:
                 "key": i.key, "title": i.title, "size": i.vod.size_bytes,
                 "privacy": i.privacy, "status": i.status,
                 "detail": i.detail, "progress": round(i.progress, 1),
+                "video_id": i.video_id,
             } for i in self.queue_items]
             cooldown = limits.get_cooldown(self.cfg)
             return {

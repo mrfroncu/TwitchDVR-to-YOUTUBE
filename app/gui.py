@@ -369,42 +369,51 @@ class App:
         self.video_tree.bind("<<TreeviewSelect>>", self._on_video_select)
         self.video_tree.bind("<Double-1>", self._open_vod_folder)
 
-        # ---- bulk actions on checked rows
+        # ---- bulk actions on checked rows (grouped: select | queue | set | maintain)
         bulk = ttk.LabelFrame(tab, text="Bulk actions (apply to checked rows)")
         bulk.pack(fill="x", padx=8, pady=(6, 0))
+
+        def vsep(parent):
+            ttk.Separator(parent, orient="vertical").pack(
+                side="left", fill="y", padx=10, pady=2)
+
         row = ttk.Frame(bulk)
-        row.pack(fill="x", padx=6, pady=6)
-        ttk.Button(row, text="Check all", width=9,
+        row.pack(fill="x", padx=6, pady=(6, 2))
+        ttk.Button(row, text="☑ All", width=7,
                    command=lambda: self._set_all_videos_checked(True)).pack(side="left")
-        ttk.Button(row, text="None", width=6,
+        ttk.Button(row, text="☐ None", width=8,
                    command=lambda: self._set_all_videos_checked(False)).pack(
-            side="left", padx=(4, 10))
-        ttk.Button(row, text="Add to queue ▶", style="Accent.TButton",
+            side="left", padx=(4, 0))
+        vsep(row)
+        ttk.Button(row, text="➕ Add to queue", style="Accent.TButton",
                    command=self.bulk_add_checked).pack(side="left")
-        ttk.Button(row, text="Reset metadata",
-                   command=self.bulk_reset_meta).pack(side="left", padx=4)
-        ttk.Label(row, text="Privacy:").pack(side="left", padx=(10, 2))
+        ttk.Button(row, text="♻ Reset metadata",
+                   command=self.bulk_reset_meta).pack(side="left", padx=(6, 0))
+        vsep(row)
+        ttk.Label(row, text="🔒 Privacy").pack(side="left", padx=(0, 4))
         self.bulk_privacy_var = tk.StringVar(value=self.cfg["privacy"])
         ttk.Combobox(row, textvariable=self.bulk_privacy_var, width=9, state="readonly",
                      values=("private", "unlisted", "public")).pack(side="left")
-        ttk.Button(row, text="Apply",
-                   command=self.bulk_apply_privacy).pack(side="left", padx=(2, 10))
-        row2 = ttk.Frame(bulk)
-        row2.pack(fill="x", padx=6, pady=(0, 6))
-        ttk.Button(row2, text="Verify on YouTube",
-                   command=self.bulk_verify).pack(side="left")
-        ttk.Button(row2, text="🗑 Recycle local files",
-                   command=self.bulk_recycle).pack(side="left", padx=4)
-        ttk.Button(row2, text="Reset upload state",
-                   command=self.bulk_reset_state).pack(side="left")
-        ttk.Label(row2, text="Playlist:").pack(side="left", padx=(10, 2))
+        ttk.Button(row, text="Set",
+                   command=self.bulk_apply_privacy).pack(side="left", padx=(4, 0))
+        ttk.Label(row, text="📃 Playlist").pack(side="left", padx=(12, 4))
         self.bulk_playlist_var = tk.StringVar(value="(default)")
         self.bulk_playlist_combo = ttk.Combobox(
-            row2, textvariable=self.bulk_playlist_var, width=22, state="readonly",
+            row, textvariable=self.bulk_playlist_var, width=20, state="readonly",
             values=["(default)", "(none)"])
         self.bulk_playlist_combo.pack(side="left")
-        ttk.Button(row2, text="Apply",
-                   command=self.bulk_apply_playlist).pack(side="left", padx=2)
+        ttk.Button(row, text="Set",
+                   command=self.bulk_apply_playlist).pack(side="left", padx=(4, 0))
+
+        row2 = ttk.Frame(bulk)
+        row2.pack(fill="x", padx=6, pady=(2, 6))
+        ttk.Button(row2, text="✅ Verify on YouTube",
+                   command=self.bulk_verify).pack(side="left")
+        ttk.Button(row2, text="↺ Reset upload state",
+                   command=self.bulk_reset_state).pack(side="left", padx=(6, 0))
+        vsep(row2)
+        ttk.Button(row2, text="🗑 Recycle local files",
+                   command=self.bulk_recycle).pack(side="left")
 
         # ---- metadata editor
         editor = ttk.LabelFrame(tab, text="Video metadata (edit before queueing)")
@@ -473,6 +482,7 @@ class App:
         self.queue_tree.heading("check", command=self._toggle_all_queue)
         self.queue_checked: set[str] = set()
         self.queue_tree.bind("<Button-1>", self._on_queue_tree_click)
+        self.queue_tree.bind("<Double-1>", self._on_queue_double)
         self.queue_tree.pack(fill="both", expand=True, padx=8, pady=(8, 4))
 
         ctl = ttk.Frame(tab)
@@ -480,22 +490,26 @@ class App:
         self.start_btn = ttk.Button(ctl, text="▶ Start uploads", style="Accent.TButton",
                                     command=self.start_uploads)
         self.start_btn.pack(side="left")
-        self.pause_btn = ttk.Button(ctl, text="⏸ Pause after current",
+        self.pause_btn = ttk.Button(ctl, text="⏸ Pause",
                                     command=self.pause_uploads, state="disabled")
-        self.pause_btn.pack(side="left", padx=6)
-        self.cancel_btn = ttk.Button(ctl, text="✖ Cancel current upload",
+        self.pause_btn.pack(side="left", padx=(6, 0))
+        self.cancel_btn = ttk.Button(ctl, text="✖ Cancel current",
                                      command=self.cancel_current, state="disabled")
-        self.cancel_btn.pack(side="left")
+        self.cancel_btn.pack(side="left", padx=(6, 0))
+        ttk.Separator(ctl, orient="vertical").pack(side="left", fill="y",
+                                                   padx=10, pady=2)
         ttk.Button(ctl, text="↻ Retry failed", command=self.retry_failed
-                   ).pack(side="left", padx=6)
-        ttk.Button(ctl, text="Remove checked/selected", command=self.remove_queue_item
+                   ).pack(side="left")
+        ttk.Button(ctl, text="🌐 Open on YouTube", command=self.open_queue_video
+                   ).pack(side="left", padx=(6, 0))
+        ttk.Button(ctl, text="🗑 Remove", command=self.remove_queue_item
                    ).pack(side="right")
-        ttk.Button(ctl, text="▼", width=3, command=lambda: self.move_queue_item(1)
+        ttk.Button(ctl, text="🧹 Clear finished", command=self.clear_finished
                    ).pack(side="right", padx=(0, 6))
+        ttk.Button(ctl, text="▼", width=3, command=lambda: self.move_queue_item(1)
+                   ).pack(side="right", padx=(0, 10))
         ttk.Button(ctl, text="▲", width=3, command=lambda: self.move_queue_item(-1)
-                   ).pack(side="right")
-        ttk.Button(ctl, text="Clear finished", command=self.clear_finished
-                   ).pack(side="right", padx=6)
+                   ).pack(side="right", padx=(0, 4))
 
         prog = ttk.Frame(tab)
         prog.pack(fill="x", padx=8, pady=4)
@@ -2060,6 +2074,29 @@ class App:
         if self.worker:
             self.worker.cancel_current.set()
             self._log("Cancelling current upload…")
+
+    def open_queue_video(self) -> None:
+        """Open the selected queue item's uploaded video on YouTube."""
+        sel = self.queue_tree.selection()
+        item = self._item_by_key(sel[0]) if sel else None
+        if item is None:
+            messagebox.showinfo("Open", "Select a video in the queue first.")
+            return
+        if not item.video_id:
+            messagebox.showinfo("Open", "That video hasn't been uploaded yet — "
+                                "the link appears once the upload finishes.")
+            return
+        import webbrowser
+        webbrowser.open(f"https://youtu.be/{item.video_id}")
+
+    def _on_queue_double(self, event) -> None:
+        if self.queue_tree.identify("region", event.x, event.y) != "cell":
+            return
+        key = self.queue_tree.identify_row(event.y)
+        item = self._item_by_key(key) if key else None
+        if item and item.video_id:
+            import webbrowser
+            webbrowser.open(f"https://youtu.be/{item.video_id}")
 
     def retry_failed(self) -> None:
         count = 0
