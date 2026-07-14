@@ -42,6 +42,7 @@ jobs:
             --exclude 'docker-compose.yml' \
             --exclude 'config' \
             --exclude 'client_secret*.json' \
+            --exclude '.env' \
             ./ \
             ${{ secrets.SSH_USER }}@${{ secrets.TAILSCALE_HOST }}:${{ secrets.DEPLOY_PATH }}/
 

@@ -322,9 +322,14 @@ async function connectYouTube() {
 /* ---------------------------------------------------------- settings */
 function renderSettings() {
   if (["set-template", "client-id", "client-secret", "folder-input", "set-daily",
-       "set-desc-template"].includes(document.activeElement?.id)) return;
+       "set-desc-template", "set-speed", "set-cooldown-h", "set-extra-tags"]
+      .includes(document.activeElement?.id)) return;
   el("set-daily").value = S.cfg.daily_upload_limit ?? 0;
   el("set-desc-template").value = S.cfg.description_template || "";
+  el("set-speed").value = S.cfg.upload_speed_limit ?? 0;
+  el("set-cooldown-h").value = S.cfg.cooldown_hours ?? 24.5;
+  el("set-verify").checked = S.cfg.verify_uploads !== false;
+  el("set-extra-tags").value = S.cfg.extra_tags || "";
   el("set-privacy").value = S.cfg.privacy;
   el("set-category").value = String(S.cfg.category_id || "20");
   el("set-template").value = S.cfg.title_template;
@@ -346,6 +351,10 @@ function saveSettings() {
     after_upload: el("set-after").value,
     daily_upload_limit: parseInt(el("set-daily").value) || 0,
     description_template: el("set-desc-template").value,
+    upload_speed_limit: parseFloat(el("set-speed").value) || 0,
+    cooldown_hours: parseFloat(el("set-cooldown-h").value) || 24.5,
+    verify_uploads: el("set-verify").checked,
+    extra_tags: el("set-extra-tags").value,
   });
 }
 

@@ -1,9 +1,16 @@
-"""FastAPI app: JSON API + static frontend for the browser version."""
+"""FastAPI app: JSON API + static frontend for the browser version.
+
+Set the WEB_PASSWORD environment variable (e.g. via an .env file next to
+docker-compose.yml) to require HTTP Basic authentication for everything.
+"""
 from __future__ import annotations
 
+import base64
+import os
+import secrets
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -48,6 +55,27 @@ class PlaylistBody(BaseModel):
 def create_app() -> FastAPI:
     ctl = Controller()
     app = FastAPI(title="TwitchDVR to YouTube", docs_url=None, redoc_url=None)
+
+    web_password = os.environ.get("WEB_PASSWORD", "")
+
+    @app.middleware("http")
+    async def _basic_auth(request: Request, call_next):
+        if web_password:
+            header = request.headers.get("authorization", "")
+            ok = False
+            if header.startswith("Basic "):
+                try:
+                    decoded = base64.b64decode(header[6:]).decode("utf-8")
+                    supplied = decoded.split(":", 1)[1] if ":" in decoded else decoded
+                    ok = secrets.compare_digest(supplied, web_password)
+                except Exception:
+                    ok = False
+            if not ok:
+                return Response(
+                    status_code=401, content="Authentication required",
+                    headers={"WWW-Authenticate":
+                             'Basic realm="TwitchDVR to YouTube"'})
+        return await call_next(request)
 
     @app.exception_handler(RuntimeError)
     async def _runtime_error(_request, exc: RuntimeError):

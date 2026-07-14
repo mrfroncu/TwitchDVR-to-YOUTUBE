@@ -112,6 +112,7 @@ class App:
         self._build_playlists_tab()
         self._build_manager_tab()
         self._build_settings_tab()
+        self._build_about_tab()
         self._build_status_bar()
         self._apply_theme(self.cfg.get("theme", "dark"))
 
@@ -126,7 +127,8 @@ class App:
         if self.accounts:
             self._log("Restoring saved YouTube session…")
             threading.Thread(target=self._restore_session, daemon=True).start()
-        threading.Thread(target=self._update_check_bg, daemon=True).start()
+        if self.cfg.get("auto_update_check", True):
+            threading.Thread(target=self._update_check_bg, daemon=True).start()
         if self.cfg.get("vod_folder") and Path(self.cfg["vod_folder"]).is_dir():
             self.folder_var.set(self.cfg["vod_folder"])
             self.root.after(200, self.scan_folder)
@@ -626,14 +628,17 @@ class App:
             self.yt_tree.column(col, width=width,
                                 anchor="center" if col not in ("title",) else "w")
         self.yt_tree.heading("check", command=self._toggle_all_yt)
+        for col in ("date", "title", "duration", "privacy", "views", "vstatus"):
+            self.yt_tree.heading(col, command=lambda c=col: self._sort_yt(c))
         self.yt_checked: set[str] = set()
         self.yt_videos: list[dict] = []
+        self._yt_sort = {"col": "", "rev": False}
         ysb = ttk.Scrollbar(tab, orient="vertical", command=self.yt_tree.yview)
         self.yt_tree.configure(yscrollcommand=ysb.set)
         self.yt_tree.pack(fill="both", expand=True, padx=(8, 0))
         ysb.place(in_=self.yt_tree, relx=1.0, rely=0, relheight=1.0, anchor="ne")
         self.yt_tree.bind("<Button-1>", self._on_yt_tree_click)
-        self.yt_tree.bind("<Double-1>", lambda _e: self.yt_open_selected())
+        self.yt_tree.bind("<Double-1>", self._on_yt_double)
         self.yt_tree.bind("<<TreeviewSelect>>", self._on_yt_select)
 
         act = ttk.LabelFrame(tab, text="Actions (apply to checked videos)")
@@ -743,6 +748,50 @@ class App:
                                  CHECKED if vid in self.yt_checked else UNCHECKED)
             return "break"
         return None
+
+    def _on_yt_double(self, event) -> None:
+        # only a double-click on an actual row opens the video (headers sort)
+        if self.yt_tree.identify("region", event.x, event.y) != "cell":
+            return
+        row = self.yt_tree.identify_row(event.y)
+        if row:
+            import webbrowser
+            webbrowser.open(f"https://youtu.be/{row}")
+
+    @staticmethod
+    def _dur_seconds(text: str) -> int:
+        parts = [p for p in (text or "").split(":") if p.strip().isdigit()]
+        seconds = 0
+        for p in parts:
+            seconds = seconds * 60 + int(p)
+        return seconds
+
+    def _sort_yt(self, col: str) -> None:
+        field = {"date": "published", "title": "title", "duration": "duration",
+                 "privacy": "privacy", "views": "views",
+                 "vstatus": "upload_status"}[col]
+        reverse = self._yt_sort["col"] == col and not self._yt_sort["rev"]
+        self._yt_sort = {"col": col, "rev": reverse}
+        if field == "duration":
+            key = lambda v: self._dur_seconds(v["duration"])   # noqa: E731
+        elif field == "views":
+            key = lambda v: v["views"]                          # noqa: E731
+        else:
+            key = lambda v: str(v[field]).lower()               # noqa: E731
+        self.yt_videos.sort(key=key, reverse=reverse)
+        self._render_yt_table()
+
+    def _render_yt_table(self) -> None:
+        self.yt_tree.delete(*self.yt_tree.get_children())
+        for i, v in enumerate(self.yt_videos):
+            tag = ("problem" if v["upload_status"] in ("failed", "rejected")
+                   else "uploaded" if v["privacy"] == "public" else "")
+            tags = tuple(t for t in (tag, "odd_row" if i % 2 else None) if t)
+            self.yt_tree.insert(
+                "", "end", iid=v["id"], tags=tags,
+                values=(CHECKED if v["id"] in self.yt_checked else UNCHECKED,
+                        v["published"], v["title"], v["duration"],
+                        v["privacy"], f"{v['views']:,}", v["upload_status"]))
 
     def _set_all_yt_checked(self, checked: bool) -> None:
         self.yt_checked = {v["id"] for v in self.yt_videos} if checked else set()
@@ -1125,6 +1174,40 @@ class App:
         ttk.Label(row, text="(0 = no limit; stops before YouTube errors)",
                   style="Muted.TLabel").pack(side="left")
 
+        row = ttk.Frame(up)
+        row.pack(fill="x", padx=8, pady=(0, 8))
+        ttk.Label(row, text="Extra tags (always added):").pack(side="left")
+        self.extra_tags_var = tk.StringVar(value=self.cfg.get("extra_tags", ""))
+        ttk.Entry(row, textvariable=self.extra_tags_var).pack(
+            side="left", fill="x", expand=True, padx=6)
+
+        beh = ttk.LabelFrame(tab, text="Behavior")
+        beh.pack(fill="x", padx=10, pady=(0, 10))
+        row = ttk.Frame(beh)
+        row.pack(fill="x", padx=8, pady=(8, 2))
+        self.verify_var = tk.BooleanVar(
+            value=bool(self.cfg.get("verify_uploads", True)))
+        ttk.Checkbutton(row, text="Verify each upload on YouTube after it finishes",
+                        variable=self.verify_var).pack(side="left")
+        self.update_check_var = tk.BooleanVar(
+            value=bool(self.cfg.get("auto_update_check", True)))
+        ttk.Checkbutton(row, text="Check for updates on startup",
+                        variable=self.update_check_var).pack(side="left", padx=14)
+        row = ttk.Frame(beh)
+        row.pack(fill="x", padx=8, pady=(2, 8))
+        ttk.Label(row, text="Upload speed limit (MB/s):").pack(side="left")
+        self.speed_limit_var = tk.StringVar(
+            value=str(self.cfg.get("upload_speed_limit", 0)))
+        ttk.Entry(row, textvariable=self.speed_limit_var, width=6
+                  ).pack(side="left", padx=4)
+        ttk.Label(row, text="(0 = unlimited)", style="Muted.TLabel").pack(side="left")
+        ttk.Label(row, text="Retry wait after YouTube upload limit (hours):"
+                  ).pack(side="left", padx=(16, 0))
+        self.cooldown_hours_var = tk.StringVar(
+            value=str(self.cfg.get("cooldown_hours", 24.5)))
+        ttk.Entry(row, textvariable=self.cooldown_hours_var, width=6
+                  ).pack(side="left", padx=4)
+
         about = ttk.Frame(tab)
         about.pack(fill="x", padx=10, pady=(2, 0))
         ttk.Button(about, text="Save settings", command=self.save_settings
@@ -1145,6 +1228,46 @@ class App:
             "API audit/verification to allow public uploads.")
         ttk.Label(tab, text=notes, wraplength=940, style="Muted.TLabel", justify="left"
                   ).pack(anchor="w", padx=10, pady=10)
+
+    # ------------------------------------------------------------- about tab --
+    def _build_about_tab(self) -> None:
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text=" ℹ About ")
+        box = ttk.Frame(tab)
+        box.pack(expand=True)
+        try:
+            img = tk.PhotoImage(file=str(_asset_path("icon-192.png")))
+            self._about_logo = img.subsample(2, 2)
+            ttk.Label(box, image=self._about_logo).pack(pady=(26, 12))
+        except Exception:
+            pass
+        ttk.Label(box, text="TwitchDVR to YouTube",
+                  font=("Segoe UI Semibold", 18)).pack()
+        ttk.Label(box, text=f"Version {__version__}",
+                  style="Muted.TLabel").pack(pady=(2, 14))
+        ttk.Label(box, text="Automated YouTube uploads for LiveStreamDVR "
+                            "Twitch recordings —\nmetadata, chapters, playlists, "
+                            "automation and channel management.",
+                  justify="center").pack()
+        ttk.Label(box, text="Created by Froncu", style="Muted.TLabel"
+                  ).pack(pady=(16, 2))
+        row = ttk.Frame(box)
+        row.pack(pady=10)
+        import webbrowser
+        repo = "https://github.com/mrfroncu/TwitchDVR-to-YOUTUBE"
+        ttk.Button(row, text="🌐 GitHub repository", style="Accent.TButton",
+                   command=lambda: webbrowser.open(repo)).pack(side="left", padx=4)
+        ttk.Button(row, text="📦 Releases",
+                   command=lambda: webbrowser.open(repo + "/releases")
+                   ).pack(side="left", padx=4)
+        ttk.Button(row, text="Check for updates",
+                   command=lambda: threading.Thread(
+                       target=self._update_check_bg, args=(True,),
+                       daemon=True).start()).pack(side="left", padx=4)
+        ttk.Label(box, text="MIT License — provided as is, without warranty.\n"
+                            "YouTube is a trademark of Google LLC; this project "
+                            "is not affiliated with Google or Twitch.",
+                  style="Muted.TLabel", justify="center").pack(pady=(18, 0))
 
     def _build_status_bar(self) -> None:
         bar = ttk.Frame(self.root)
@@ -1194,12 +1317,20 @@ class App:
         desc_tpl = (self.desc_template_text.get("1.0", "end-1c")
                     if hasattr(self, "desc_template_text")
                     else self.cfg.get("description_template"))
+        tags = scanner.build_tags(vod)
+        extra_raw = (self.extra_tags_var.get() if hasattr(self, "extra_tags_var")
+                     else self.cfg.get("extra_tags", ""))
+        seen = {t.lower() for t in tags}
+        for tag in (t.strip() for t in extra_raw.split(",")):
+            if tag and tag.lower() not in seen:
+                tags.append(tag)
+                seen.add(tag.lower())
         return {
             "title": scanner.build_title(vod, self.template_var.get()
                                          if hasattr(self, "template_var")
                                          else self.cfg["title_template"]),
             "description": scanner.build_description(vod, desc_tpl or None),
-            "tags": ", ".join(scanner.build_tags(vod)),
+            "tags": ", ".join(tags),
             "privacy": self.cfg["privacy"],
             "playlist_choice": "(default)",
         }
@@ -1599,7 +1730,9 @@ class App:
         self._log(f"Moved to Recycle Bin: {target}")
         return True
 
-    def _open_vod_folder(self, _event) -> None:
+    def _open_vod_folder(self, event) -> None:
+        if self.video_tree.identify("region", event.x, event.y) != "cell":
+            return
         sel = self.video_tree.selection()
         if sel and sel[0] in self.vods:
             open_in_file_manager(self.vods[sel[0]].folder)
@@ -1800,7 +1933,9 @@ class App:
         self.worker = UploadWorker(
             self.credentials, self.queue_items, self.events,
             daily_limit=int(self.cfg.get("daily_upload_limit", 0) or 0),
-            count_recent=lambda: limits.count_recent(self.registry))
+            count_recent=lambda: limits.count_recent(self.registry),
+            speed_limit_bps=float(self.cfg.get("upload_speed_limit", 0) or 0) * 1e6,
+            verify=bool(self.cfg.get("verify_uploads", True)))
         self.worker.start()
         self.start_btn.configure(state="disabled")
         self.pause_btn.configure(state="normal")
@@ -2068,7 +2203,8 @@ class App:
             self._reset_progress_anim()
             reason = ev.get("reason")
             if reason == "quota":
-                until = limits.quota_cooldown(ev.get("detail", ""))
+                until = limits.quota_cooldown(ev.get("detail", ""),
+                                              self.cfg.get("cooldown_hours"))
                 limits.set_cooldown(self.cfg, until, ev.get("detail", "limit"))
                 config.save_config(self.cfg)
                 self.current_label.configure(
@@ -2119,16 +2255,7 @@ class App:
             items = ev.get("items")
             self.yt_videos = items or []
             self.yt_checked &= {v["id"] for v in self.yt_videos}
-            self.yt_tree.delete(*self.yt_tree.get_children())
-            for i, v in enumerate(self.yt_videos):
-                tag = ("problem" if v["upload_status"] in ("failed", "rejected")
-                       else "uploaded" if v["privacy"] == "public" else "")
-                tags = tuple(t for t in (tag, "odd_row" if i % 2 else None) if t)
-                self.yt_tree.insert(
-                    "", "end", iid=v["id"], tags=tags,
-                    values=(CHECKED if v["id"] in self.yt_checked else UNCHECKED,
-                            v["published"], v["title"], v["duration"],
-                            v["privacy"], f"{v['views']:,}", v["upload_status"]))
+            self._render_yt_table()
             self.mgr_count_label.configure(
                 text=f"{len(self.yt_videos)} video(s)" if items is not None else "")
         elif etype == "yt_reload":
@@ -2260,6 +2387,19 @@ class App:
             self.cfg["daily_upload_limit"] = max(0, int(self.daily_limit_var.get()))
         except ValueError:
             pass
+        self.cfg["extra_tags"] = self.extra_tags_var.get().strip()
+        self.cfg["verify_uploads"] = bool(self.verify_var.get())
+        self.cfg["auto_update_check"] = bool(self.update_check_var.get())
+        try:
+            self.cfg["upload_speed_limit"] = max(
+                0.0, float(self.speed_limit_var.get().replace(",", ".")))
+        except ValueError:
+            pass
+        try:
+            self.cfg["cooldown_hours"] = max(
+                0.5, float(self.cooldown_hours_var.get().replace(",", ".")))
+        except ValueError:
+            pass
         config.save_config(self.cfg)
         if not silent:
             self._log("Settings saved.")
@@ -2285,6 +2425,164 @@ class App:
         self.root.destroy()
 
 
+def _asset_path(name: str) -> Path:
+    base = Path(getattr(sys, "_MEIPASS",
+                        Path(__file__).resolve().parent.parent))
+    return base / "assets" / name
+
+
+def _set_app_icon(root: tk.Tk) -> None:
+    try:
+        ico = _asset_path("icon.ico")
+        if sys.platform == "win32" and ico.exists():
+            root.iconbitmap(default=str(ico))
+        png = _asset_path("icon-192.png")
+        if png.exists():
+            img = tk.PhotoImage(file=str(png))
+            root.iconphoto(True, img)
+            root._app_icon = img          # keep a reference alive
+    except Exception:
+        pass
+
+
+AGREEMENT_TEXT = """TwitchDVR to YouTube — Terms of Use
+
+By using this software you agree to the following:
+
+1. LICENSE — This software is released under the MIT License. It is
+   provided "AS IS", without warranty of any kind. The author is not
+   liable for any damage, data loss, or account issues resulting from
+   its use.
+
+2. YOUR RESPONSIBILITY — You are responsible for the content you
+   upload. You must comply with the YouTube Terms of Service, the
+   YouTube API Services Terms of Service, Google's Privacy Policy, and
+   copyright law. Upload only content you have the rights to publish.
+
+3. GOOGLE / YOUTUBE API — This application uses the YouTube Data API
+   with OAuth credentials that YOU create in your own Google Cloud
+   project. API quota, upload limits, and any restrictions on your
+   Google account are between you and Google.
+
+4. LOCAL FILE OPERATIONS — Optional cleanup features can move files to
+   the Recycle Bin or (in server mode) delete them permanently. They
+   only run after a verified upload, but you enable and use them at
+   your own risk. Keep backups of anything irreplaceable.
+
+5. DATA — The app stores its configuration, OAuth tokens, and upload
+   history locally on your machine. Nothing is sent anywhere except to
+   Google/YouTube APIs and (for update checks) to GitHub.
+
+If you do not agree, click Decline and the application will close.
+"""
+
+
+def _ensure_agreement(root: tk.Tk) -> bool:
+    """First-run terms dialog; acceptance is remembered in .accepted."""
+    marker = config.APP_DIR / ".accepted"
+    if marker.exists():
+        return True
+    dlg = tk.Toplevel(root)
+    dlg.title("TwitchDVR to YouTube — Terms of Use")
+    dlg.configure(bg="#1f1f1f")
+    w, h = 660, 560
+    x = (dlg.winfo_screenwidth() - w) // 2
+    y = (dlg.winfo_screenheight() - h) // 2
+    dlg.geometry(f"{w}x{h}+{x}+{y}")
+    dlg.grab_set()
+    dlg.protocol("WM_DELETE_WINDOW", lambda: None)
+
+    text = tk.Text(dlg, wrap="word", bg="#2a2a2a", fg="#f0f0f0",
+                   relief="flat", padx=16, pady=14,
+                   highlightthickness=0, font=("Segoe UI", 10))
+    text.insert("1.0", AGREEMENT_TEXT)
+    text.configure(state="disabled")
+    text.pack(fill="both", expand=True, padx=14, pady=(14, 8))
+
+    result = {"ok": False}
+
+    def accept():
+        config.APP_DIR.mkdir(parents=True, exist_ok=True)
+        marker.write_text(
+            f"accepted={datetime.now(timezone.utc).isoformat()} "
+            f"version={__version__}\n", encoding="utf-8")
+        result["ok"] = True
+        dlg.destroy()
+
+    btns = tk.Frame(dlg, bg="#1f1f1f")
+    btns.pack(fill="x", padx=14, pady=(0, 14))
+    tk.Button(btns, text="Decline", command=dlg.destroy, bg="#2b2b2b",
+              fg="#f0f0f0", activebackground="#383838", relief="flat",
+              padx=18, pady=7, bd=0).pack(side="right", padx=(8, 0))
+    tk.Button(btns, text="Accept", command=accept, bg="#0f6fc5", fg="#ffffff",
+              activebackground="#1d80d8", relief="flat", padx=24, pady=7,
+              bd=0).pack(side="right")
+    root.wait_window(dlg)
+    return result["ok"]
+
+
+def _show_splash(root: tk.Tk, on_done) -> None:
+    """Borderless animated splash: fading logo and a sweeping accent bar."""
+    splash = tk.Toplevel(root)
+    splash.overrideredirect(True)
+    w, h = 430, 250
+    x = (splash.winfo_screenwidth() - w) // 2
+    y = (splash.winfo_screenheight() - h) // 2
+    splash.geometry(f"{w}x{h}+{x}+{y}")
+    splash.configure(bg="#16161d")
+    splash.attributes("-topmost", True)
+    splash.attributes("-alpha", 0.0)
+    canvas = tk.Canvas(splash, width=w, height=h, bg="#16161d",
+                       highlightthickness=0)
+    canvas.pack(fill="both", expand=True)
+    try:
+        logo = tk.PhotoImage(file=str(_asset_path("icon-192.png"))).subsample(2, 2)
+        canvas.create_image(w // 2, 84, image=logo)
+        splash._logo = logo
+    except Exception:
+        canvas.create_text(w // 2, 84, text="▶", fill="#6d5df6",
+                           font=("Segoe UI", 46))
+    canvas.create_text(w // 2, 162, text="TwitchDVR → YouTube",
+                       fill="#f0f0f0", font=("Segoe UI Semibold", 15))
+    canvas.create_text(w // 2, 186, text=f"v{__version__}",
+                       fill="#8b93a7", font=("Segoe UI", 9))
+    bar_y = 222
+    canvas.create_rectangle(24, bar_y, w - 24, bar_y + 4,
+                            fill="#23232e", width=0)
+    bar = canvas.create_rectangle(0, bar_y, 0, bar_y + 4,
+                                  fill="#6d5df6", width=0)
+    state = {"step": 0}
+
+    def tick():
+        step = state["step"] = state["step"] + 1
+        try:
+            splash.attributes("-alpha", min(1.0, step / 9))
+            span = (w - 48) * 0.38
+            travel = (w - 48) + span
+            pos = 24 - span + (step * 13) % travel
+            canvas.coords(bar, max(24, pos), bar_y,
+                          min(w - 24, pos + span), bar_y + 4)
+        except tk.TclError:
+            return
+        if step < 80:
+            splash.after(16, tick)
+        else:
+            fade_out()
+
+    def fade_out(alpha: float = 1.0):
+        try:
+            if alpha <= 0:
+                splash.destroy()
+                on_done()
+                return
+            splash.attributes("-alpha", alpha)
+            splash.after(24, fade_out, alpha - 0.12)
+        except tk.TclError:
+            on_done()
+
+    tick()
+
+
 def main() -> None:
     root = tk.Tk()
     try:
@@ -2292,7 +2590,11 @@ def main() -> None:
         windll.shcore.SetProcessDpiAwareness(1)  # crisp text on HiDPI
     except Exception:
         pass
-    root.attributes("-alpha", 0.0)   # start invisible, fade in below
+    _set_app_icon(root)
+    root.withdraw()
+    if not _ensure_agreement(root):
+        root.destroy()
+        return
     App(root)
 
     def fade_in(step: int = 0) -> None:
@@ -2304,5 +2606,10 @@ def main() -> None:
         if alpha < 1.0:
             root.after(16, fade_in, step + 1)
 
-    fade_in()
+    def boot():
+        root.attributes("-alpha", 0.0)
+        root.deiconify()
+        fade_in()
+
+    _show_splash(root, boot)
     root.mainloop()
