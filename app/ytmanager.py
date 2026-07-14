@@ -53,6 +53,63 @@ def list_channel_videos(service, limit: int = 500) -> list[dict]:
     return videos
 
 
+def get_video(service, video_id: str) -> dict:
+    """Full editable metadata of one video."""
+    resp = service.videos().list(part="snippet,status", id=video_id).execute()
+    items = resp.get("items") or []
+    if not items:
+        raise RuntimeError(f"video {video_id} not found")
+    snippet, status = items[0]["snippet"], items[0]["status"]
+    return {
+        "id": video_id,
+        "title": snippet.get("title", ""),
+        "description": snippet.get("description", ""),
+        "tags": snippet.get("tags") or [],
+        "category_id": snippet.get("categoryId", "20"),
+        "privacy": status.get("privacyStatus", "private"),
+    }
+
+
+def update_video(service, video_id: str, *, title: str, description: str,
+                 tags: list[str], category_id: str, privacy: str) -> None:
+    """Fetch-modify-update of snippet+status (the API replaces the whole
+    snippet, so unspecified fields must be carried over)."""
+    resp = service.videos().list(part="snippet,status", id=video_id).execute()
+    items = resp.get("items") or []
+    if not items:
+        raise RuntimeError(f"video {video_id} not found")
+    snippet, status = items[0]["snippet"], items[0]["status"]
+    snippet["title"] = title
+    snippet["description"] = description
+    snippet["tags"] = tags
+    snippet["categoryId"] = category_id
+    status["privacyStatus"] = privacy
+    service.videos().update(
+        part="snippet,status",
+        body={"id": video_id, "snippet": snippet, "status": status}).execute()
+
+
+def video_playlists(service, channel_playlists: list[dict],
+                    video_id: str) -> list[dict]:
+    """Which of the channel's playlists contain the video.
+    Returns [{'playlist_id', 'title', 'item_id'}] (item_id allows removal)."""
+    out = []
+    for playlist in channel_playlists:
+        resp = service.playlistItems().list(
+            part="id", playlistId=playlist["id"], videoId=video_id,
+            maxResults=1).execute()
+        items = resp.get("items") or []
+        if items:
+            out.append({"playlist_id": playlist["id"],
+                        "title": playlist["title"],
+                        "item_id": items[0]["id"]})
+    return out
+
+
+def remove_from_playlist(service, playlist_item_id: str) -> None:
+    service.playlistItems().delete(id=playlist_item_id).execute()
+
+
 def set_privacy(service, video_id: str, privacy: str) -> None:
     """Fetch-modify-update so other status fields aren't clobbered."""
     resp = service.videos().list(part="status", id=video_id).execute()

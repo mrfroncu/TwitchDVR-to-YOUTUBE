@@ -321,9 +321,10 @@ async function connectYouTube() {
 
 /* ---------------------------------------------------------- settings */
 function renderSettings() {
-  if (["set-template", "client-id", "client-secret", "folder-input", "set-daily"]
-      .includes(document.activeElement?.id)) return;
+  if (["set-template", "client-id", "client-secret", "folder-input", "set-daily",
+       "set-desc-template"].includes(document.activeElement?.id)) return;
   el("set-daily").value = S.cfg.daily_upload_limit ?? 0;
+  el("set-desc-template").value = S.cfg.description_template || "";
   el("set-privacy").value = S.cfg.privacy;
   el("set-category").value = String(S.cfg.category_id || "20");
   el("set-template").value = S.cfg.title_template;
@@ -344,6 +345,7 @@ function saveSettings() {
     made_for_kids: el("set-kids").checked,
     after_upload: el("set-after").value,
     daily_upload_limit: parseInt(el("set-daily").value) || 0,
+    description_template: el("set-desc-template").value,
   });
 }
 

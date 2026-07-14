@@ -24,8 +24,12 @@ Twitch VOD recordings to YouTube — sequentially, with all the stream metadata 
   upload progress, and a theme-matched title bar — drawn natively, so it stays responsive
 - **Multiple channels**: add several YouTube accounts/brand channels and switch the active
   one from a dropdown (Settings or the My YouTube tab); uploads go to the active channel
-- **My YouTube tab**: built-in manager for videos already on the channel — list with
-  privacy/views/status, bulk add-to-playlist, bulk privacy change, open in browser, delete
+- **My YouTube tab**: full manager for videos already on the channel — list with
+  privacy/views/status, plus a complete per-video editor (title, description, tags,
+  privacy, category saved straight to YouTube), playlist membership view with add/remove,
+  and bulk actions: add to playlist, set privacy, open in browser, delete
+- **Templates**: both the video title and the whole description format are editable
+  templates with placeholders (Settings), including the auto-generated chapter block
 - **Auto-update**: the desktop app checks GitHub releases on startup and can download the
   new portable exe, swap itself and restart (Settings → Check for updates)
 - **Automation tab**: watch the VOD folder in the background — rescan on an interval,

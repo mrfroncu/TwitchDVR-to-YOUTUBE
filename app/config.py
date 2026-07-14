@@ -36,6 +36,7 @@ DEFAULTS = {
     "privacy": "private",           # private | unlisted | public
     "category_id": "20",            # 20 = Gaming
     "title_template": "{title} | {streamer} VOD {date}",
+    "description_template": "",     # empty = built-in default format
     "notify_subscribers": False,
     "made_for_kids": False,
     "after_upload": "keep",         # keep | trash_video | trash_folder

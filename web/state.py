@@ -205,7 +205,8 @@ class Controller:
     def _generate_meta(self, vod: Vod) -> dict:
         return {
             "title": scanner.build_title(vod, self.cfg["title_template"]),
-            "description": scanner.build_description(vod),
+            "description": scanner.build_description(
+                vod, self.cfg.get("description_template") or None),
             "tags": ", ".join(scanner.build_tags(vod)),
             "privacy": self.cfg["privacy"],
             "playlist_choice": "(default)",
