@@ -344,7 +344,10 @@ class App:
         ttk.Entry(top, textvariable=self.folder_var).pack(
             side="left", fill="x", expand=True, padx=6)
         ttk.Button(top, text="Browse…", command=self.pick_folder).pack(side="left")
-        ttk.Button(top, text="Scan", command=self.scan_folder).pack(side="left", padx=(6, 0))
+        self.scan_btn = ttk.Button(top, text="🔍 Scan", command=self.scan_folder)
+        self.scan_btn.pack(side="left", padx=(6, 0))
+        self.scan_status_label = ttk.Label(tab, text="", style="Muted.TLabel")
+        self.scan_status_label.pack(anchor="w", padx=10, pady=(0, 2))
 
         cols = ("check", "date", "streamer", "title", "duration", "size",
                 "chapters", "status")
@@ -640,7 +643,9 @@ class App:
             self._auto_log("No VOD folder configured — nothing to scan.")
             return
         before = set(self.vods)
-        self.scan_folder()
+        self.scan_folder(on_done=lambda: self._auto_cycle_finish(before))
+
+    def _auto_cycle_finish(self, before: set) -> None:
         new = [k for k in self.vods if k not in before]
         if new:
             self._auto_log(f"Found {len(new)} new VOD folder(s).")
@@ -1410,20 +1415,46 @@ class App:
             self.folder_var.set(folder)
             self.scan_folder()
 
-    def scan_folder(self) -> None:
+    def scan_folder(self, on_done=None) -> None:
+        """Scan in a background thread with live progress in the status label."""
         folder = self.folder_var.get().strip()
         if not folder:
+            if on_done:
+                on_done()
             return
         root = Path(folder)
         if not root.is_dir():
             messagebox.showerror("Scan", f"Folder does not exist:\n{folder}")
             return
+        if getattr(self, "_scanning", False):
+            self._log("A scan is already running.")
+            return
+        self._scanning = True
+        self._scan_on_done = on_done
         self.cfg["vod_folder"] = folder
         config.save_config(self.cfg)
-
         self._save_editor()
         self._editing_key = None
-        vods = scanner.scan_folder(root)
+        self.scan_btn.configure(state="disabled")
+        self.scan_status_label.configure(text="⏳ Scanning…")
+
+        def worker():
+            try:
+                vods = scanner.scan_folder(root, progress=lambda done, total, name:
+                    self.events.put({"type": "scan_progress", "done": done,
+                                     "total": total, "name": name}))
+                self.events.put({"type": "scan_done", "vods": vods,
+                                 "folder": folder})
+            except Exception as exc:
+                self.events.put({"type": "scan_done", "vods": [],
+                                 "folder": folder, "error": str(exc)[:200]})
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _finish_scan(self, ev: dict) -> None:
+        self._scanning = False
+        self.scan_btn.configure(state="normal")
+        vods = ev["vods"]
         self.vods = {v.key: v for v in vods}
         self.video_checked &= set(self.vods)
         for key in list(self.metas):
@@ -1433,7 +1464,22 @@ class App:
             if vod.key not in self.metas:
                 self.metas[vod.key] = self._generate_meta(vod)
         self._refresh_video_tree()
-        self._log(f"Scanned {folder}: found {len(vods)} VOD folder(s).")
+        if ev.get("error"):
+            self.scan_status_label.configure(text=f"❌ Scan failed: {ev['error']}")
+            self._log(f"Scan failed: {ev['error']}")
+        elif not vods:
+            self.scan_status_label.configure(
+                text="⚠ No VOD folders found here — pick the folder that contains "
+                     "the per-stream subfolders.")
+            self._log(f"Scanned {ev['folder']}: no VOD folders found.")
+        else:
+            self.scan_status_label.configure(
+                text=f"✅ Found {len(vods)} VOD folder(s).")
+            self._log(f"Scanned {ev['folder']}: found {len(vods)} VOD folder(s).")
+        callback = self._scan_on_done
+        self._scan_on_done = None
+        if callback:
+            callback()
 
     def _generate_meta(self, vod: Vod) -> dict:
         desc_tpl = (self.desc_template_text.get("1.0", "end-1c")
@@ -2275,6 +2321,11 @@ class App:
         etype = ev.get("type")
         if etype == "log":
             self._log(ev["text"])
+        elif etype == "scan_progress":
+            self.scan_status_label.configure(
+                text=f"⏳ Scanning… {ev['done']}/{ev['total']}: {ev['name'][:48]}")
+        elif etype == "scan_done":
+            self._finish_scan(ev)
         elif etype == "item_status":
             item = self._item_by_key(ev["key"])
             if item and ev["status"] == "done":

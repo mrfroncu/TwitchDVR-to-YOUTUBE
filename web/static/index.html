@@ -44,7 +44,8 @@
       <h1>Videos</h1>
       <div class="toolbar">
         <input id="folder-input" class="input grow" placeholder="/vods" spellcheck="false">
-        <button class="btn btn-accent" onclick="doScan()">Scan</button>
+        <button id="scan-btn" class="btn btn-accent" onclick="doScan()">🔍 Scan</button>
+        <span id="scan-status" class="chip chip-muted hidden"></span>
       </div>
     </header>
     <div class="card">

@@ -192,19 +192,25 @@ def scan_vod_dir(sub: Path) -> Vod | None:
     return vod
 
 
-def scan_folder(root: Path) -> list[Vod]:
-    """Scan every subfolder of `root`; also accepts `root` itself being a VOD dir."""
+def scan_folder(root: Path, progress=None) -> list[Vod]:
+    """Scan every subfolder of `root`; also accepts `root` itself being a VOD dir.
+
+    `progress(done, total, current_name)` is called before each subfolder.
+    """
     vods: list[Vod] = []
     if not root.is_dir():
         return vods
     single = scan_vod_dir(root)
     if single is not None:
         return [single]
-    for sub in sorted(root.iterdir()):
-        if sub.is_dir():
-            vod = scan_vod_dir(sub)
-            if vod is not None:
-                vods.append(vod)
+    subs = [sub for sub in sorted(root.iterdir()) if sub.is_dir()]
+    total = len(subs)
+    for i, sub in enumerate(subs, start=1):
+        if progress is not None:
+            progress(i, total, sub.name)
+        vod = scan_vod_dir(sub)
+        if vod is not None:
+            vods.append(vod)
     vods.sort(key=lambda v: (v.started_at or datetime.min.replace(tzinfo=timezone.utc)))
     return vods
 

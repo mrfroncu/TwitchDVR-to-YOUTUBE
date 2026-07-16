@@ -4,6 +4,18 @@ Release versions come from the `VERSION` file; each release's notes are the
 matching section of this file. Bump `VERSION` and add a section here to cut
 a new release.
 
+## 2.2.0 — 2026-07-16
+
+### 🔍 Scan feedback
+- Scanning now shows live progress everywhere instead of silently freezing:
+  the desktop scans in a background thread with a status line under the
+  folder bar ("⏳ Scanning… 12/48: folder"), and the web/Studio UI shows a
+  status chip next to the Scan button. Both end with a clear result —
+  "✅ Found N VOD folder(s)", "⚠ No VOD folders found" (with a hint that
+  you should pick the folder containing the per-stream subfolders), or the
+  error that occurred. The Scan button is disabled while a scan runs, and
+  automation waits for the background scan to finish before queueing.
+
 ## 2.1.0 — 2026-07-15
 
 ### 📱 Mobile

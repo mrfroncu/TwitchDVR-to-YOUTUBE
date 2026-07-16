@@ -53,6 +53,8 @@ class Controller:
         self._seq = 0
         self._auto_countdown = int(self.cfg.get("auto_scan_interval_min", 10)) * 60
         self.auto_status = "off"
+        self.scan_state: dict = {"active": False, "done": 0, "total": 0,
+                                 "current": "", "found": None, "error": ""}
         self.lock = threading.RLock()
 
         self.update_info: dict | None = None
@@ -345,14 +347,28 @@ class Controller:
 
     # ------------------------------------------------------------------- scan
     def scan(self, folder: str | None = None) -> int:
+        """Blocking scan; live progress is published via self.scan_state."""
         folder = (folder or self.cfg.get("vod_folder") or VODS_DEFAULT).strip()
         root = Path(folder)
         if not root.is_dir():
+            self.scan_state.update(active=False, found=None,
+                                   error=f"folder does not exist: {folder}")
             raise FileNotFoundError(f"folder does not exist: {folder}")
+        if self.scan_state.get("active"):
+            raise RuntimeError("a scan is already running")
+        self.scan_state.update(active=True, done=0, total=0, current="",
+                               found=None, error="")
         with self.lock:
             self.cfg["vod_folder"] = folder
             config.save_config(self.cfg)
-            vods = scanner.scan_folder(root)
+        try:
+            vods = scanner.scan_folder(
+                root, progress=lambda done, total, name: self.scan_state.update(
+                    done=done, total=total, current=name))
+        except Exception as exc:
+            self.scan_state.update(active=False, error=str(exc)[:200])
+            raise
+        with self.lock:
             self.vods = {v.key: v for v in vods}
             for key in list(self.metas):
                 if key not in self.vods:
@@ -360,8 +376,22 @@ class Controller:
             for vod in vods:
                 if vod.key not in self.metas:
                     self.metas[vod.key] = self._generate_meta(vod)
-        self.log(f"Scanned {folder}: found {len(vods)} VOD folder(s).")
+        self.scan_state.update(active=False, found=len(vods))
+        self.log(f"Scanned {folder}: found {len(vods)} VOD folder(s)."
+                 if vods else f"Scanned {folder}: no VOD folders found.")
         return len(vods)
+
+    def scan_async(self, folder: str | None = None) -> None:
+        if self.scan_state.get("active"):
+            raise RuntimeError("a scan is already running")
+
+        def worker():
+            try:
+                self.scan(folder)
+            except (FileNotFoundError, RuntimeError) as exc:
+                self.log(f"Scan failed: {exc}")
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _generate_meta(self, vod: Vod) -> dict:
         tags = scanner.build_tags(vod)
@@ -774,7 +804,7 @@ class Controller:
         before = set(self.vods)
         try:
             self.scan()
-        except FileNotFoundError as exc:
+        except (FileNotFoundError, RuntimeError) as exc:
             self.log(f"Automation: {exc}")
             return
         new = [k for k in self.vods if k not in before]
@@ -833,6 +863,7 @@ class Controller:
                 "version": __version__,
                 "desktop": IS_DESKTOP,
                 "update": self.update_info,
+                "scan": dict(self.scan_state),
                 "cooldown": limits.fmt_local(cooldown) if cooldown else None,
                 "cooldown_reason": self.cfg.get("cooldown_reason", ""),
                 "uploads_last_24h": limits.count_recent(self.registry),
