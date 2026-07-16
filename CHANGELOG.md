@@ -4,6 +4,18 @@ Release versions come from the `VERSION` file; each release's notes are the
 matching section of this file. Bump `VERSION` and add a section here to cut
 a new release.
 
+## 2.5.0 — 2026-07-16
+
+### ℹ️ About page in Studio / web
+- The modern interface now has an About section: app info, author, GitHub
+  and releases links, and (on desktop) a check-for-updates button.
+- Full **release notes history** is shown right on the About page — the
+  changelog ships inside the exe, the .app and the Docker image and is
+  rendered in-app.
+- Historical GitHub releases (the whole v1.0.x series) got retroactive
+  release notes generated from their commit history, so the releases page
+  now tells a coherent story.
+
 ## 2.4.0 — 2026-07-16
 
 ### 🎞 Video preview

@@ -242,6 +242,24 @@ input[type="radio"] { accent-color: var(--accent); }
 }
 .logbar.open .log-lines { display: block; }
 
+/* ---------------------------------------------------------------- about */
+.about-card { text-align: center; align-items: center; display: flex;
+              flex-direction: column; gap: 8px; }
+.about-card img { border-radius: 20px; }
+.about-title { font-size: 20px; margin: 0; }
+.about-desc { max-width: 560px; }
+.about-links { justify-content: center; }
+.md h2, .md h3, .md h4 { margin: 18px 0 6px; }
+.md h3 { font-size: 16px; color: var(--fg); border-bottom: 1px solid var(--border);
+         padding-bottom: 6px; }
+.md h4 { font-size: 13.5px; color: var(--muted); text-transform: none; }
+.md ul { margin: 4px 0 10px 22px; }
+.md li { margin: 3px 0; color: var(--muted); }
+.md p { color: var(--muted); margin: 4px 0; }
+.md code { background: var(--card-2); border-radius: 4px; padding: 1px 5px;
+           font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+.md a { color: var(--info); }
+
 /* ------------------------------------------------------- video preview */
 .video-modal {
   position: fixed; inset: 0; z-index: 80;
