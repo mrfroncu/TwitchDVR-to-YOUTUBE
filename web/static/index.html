@@ -64,7 +64,8 @@
         <span class="sep"></span>
         <button class="btn sm" onclick="bulk('verify')">Verify on YouTube</button>
         <button class="btn sm" onclick="bulk('reset_state', '', true)">Reset upload state</button>
-        <button class="btn btn-danger sm" onclick="bulk('delete_local', '', true)">🗑 Delete local files</button>
+        <button class="btn btn-danger sm" onclick="bulk('delete_local', '', true)">🗑 Delete local folders</button>
+        <span id="op-status" class="chip chip-muted hidden"></span>
       </div>
       <div class="table-wrap">
         <table id="videos-table">

@@ -55,6 +55,8 @@ class Controller:
         self.auto_status = "off"
         self.scan_state: dict = {"active": False, "done": 0, "total": 0,
                                  "current": "", "found": None, "error": ""}
+        self.op_state: dict = {"active": False, "label": "", "done": 0,
+                               "total": 0, "result": ""}
         self.lock = threading.RLock()
 
         self.update_info: dict | None = None
@@ -686,6 +688,10 @@ class Controller:
             entry = self.registry.setdefault(key, {})
             entry["local_deleted"] = True
             config.save_registry(self.registry)
+            if mode == "trash_folder":
+                # the folder is gone — drop it from the list immediately
+                self.vods.pop(key, None)
+                self.metas.pop(key, None)
         self.log(f"Deleted local files: {target}")
         return True
 
@@ -728,16 +734,36 @@ class Controller:
                              daemon=True).start()
             return {"count": len(targets)}
         if action == "delete_local":
-            mode = self.cfg.get("after_upload", "keep")
-            mode = "trash_video" if mode == "keep" else mode
-            count = 0
-            for key in keys:
-                entry = self.registry.get(key)
-                if entry and entry.get("verified") and not entry.get("local_deleted"):
-                    if self._dispose_vod(key, mode):
-                        count += 1
-            self.scan()
-            return {"count": count}
+            candidates = [
+                key for key in keys
+                if (entry := self.registry.get(key))
+                and entry.get("verified") and not entry.get("local_deleted")]
+            if not candidates:
+                raise RuntimeError("nothing deletable — only uploaded AND "
+                                   "verified videos can be deleted")
+            if self.op_state.get("active"):
+                raise RuntimeError("another delete operation is running")
+            self.op_state.update(active=True, label="Deleting", done=0,
+                                 total=len(candidates), result="")
+
+            def worker():
+                done = 0
+                for i, key in enumerate(candidates, start=1):
+                    self.op_state.update(done=i)
+                    # manual deletion always removes the WHOLE folder
+                    if self._dispose_vod(key, "trash_folder"):
+                        done += 1
+                self.op_state.update(
+                    active=False,
+                    result=f"Deleted {done} of {len(candidates)} folder(s)")
+                self.log(f"Deleted {done} of {len(candidates)} VOD folder(s).")
+                try:
+                    self.scan()
+                except (FileNotFoundError, RuntimeError):
+                    pass
+
+            threading.Thread(target=worker, daemon=True).start()
+            return {"started": True, "count": len(candidates)}
         raise RuntimeError(f"unknown bulk action: {action}")
 
     def _verify_worker(self, keys: list[str]) -> None:
@@ -864,6 +890,7 @@ class Controller:
                 "desktop": IS_DESKTOP,
                 "update": self.update_info,
                 "scan": dict(self.scan_state),
+                "op": dict(self.op_state),
                 "cooldown": limits.fmt_local(cooldown) if cooldown else None,
                 "cooldown_reason": self.cfg.get("cooldown_reason", ""),
                 "uploads_last_24h": limits.count_recent(self.registry),

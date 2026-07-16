@@ -193,9 +193,25 @@ function renderScan() {
 async function bulk(action, value = "", confirmFirst = false) {
   if (!checked.size) { toast("Nothing checked — tick some rows first."); return; }
   if (confirmFirst && !confirm(
-      `${action === "delete_local" ? "PERMANENTLY delete local files of" : "Apply to"} ` +
-      `${checked.size} checked video(s)?`)) return;
+      `${action === "delete_local"
+        ? "PERMANENTLY delete the WHOLE local folders (video + metadata) of"
+        : "Apply to"} ${checked.size} checked video(s)?`)) return;
   await api("/api/bulk", { action, keys: [...checked], value });
+}
+function renderOps() {
+  const chip = el("op-status");
+  const op = (S && S.op) || {};
+  if (op.active) {
+    chip.textContent = `🗑 ${op.label}… ${op.done}/${op.total}`;
+    chip.className = "chip chip-muted";
+    chip.classList.remove("hidden");
+  } else if (op.result) {
+    chip.textContent = "✅ " + op.result;
+    chip.className = "chip";
+    chip.classList.remove("hidden");
+  } else {
+    chip.classList.add("hidden");
+  }
 }
 
 /* ------------------------------------------------------------ editor */
@@ -661,6 +677,7 @@ async function refresh() {
   renderAccounts();
   renderDesktop();
   renderScan();
+  renderOps();
   renderCooldown();
   renderAutomation();
   renderSettings();
