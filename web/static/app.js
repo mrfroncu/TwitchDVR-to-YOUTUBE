@@ -383,6 +383,33 @@ async function createPlaylist() {
   await api("/api/playlists/create", { title, privacy: el("new-pl-privacy").value });
 }
 
+/* ------------------------------------------------------ video preview */
+function openVideoModal(key) {
+  if (!key) return;
+  const v = S.vods.find(x => x.key === key);
+  if (!v) return;
+  if ((v.problems || []).some(p => p.includes(".ts"))) {
+    toast("Raw .ts captures may not play in the browser — use a local player.");
+  }
+  el("video-modal-title").textContent = v.stream_title || key;
+  el("video-player").src = `/api/video/${encodeURIComponent(key)}/stream`;
+  el("video-modal").classList.remove("hidden");
+  el("video-player").play().catch(() => {});
+}
+function closeVideoModal() {
+  const player = el("video-player");
+  player.pause();
+  player.removeAttribute("src");
+  player.load();
+  el("video-modal").classList.add("hidden");
+}
+el("video-modal").addEventListener("click", (e) => {
+  if (e.target === el("video-modal")) closeVideoModal();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeVideoModal();
+});
+
 /* --------------------------------------------------------- my youtube */
 let ytVideos = [];
 let ytChecked = new Set();

@@ -388,7 +388,19 @@
     <div class="field-row">
       <button class="btn btn-accent" onclick="saveEditor()">Save</button>
       <button class="btn" onclick="resetEditor()">Reset to generated</button>
-      <button class="btn" onclick="saveEditor(true)">Save &amp; queue ▶</button>
+      <button class="btn" onclick="openVideoModal(editorKey)">▶ Preview</button>
+      <button class="btn" onclick="saveEditor(true)">Save &amp; queue ➕</button>
+    </div>
+  </div>
+
+  <!-- ------------------------------------------------------ video preview -->
+  <div id="video-modal" class="video-modal hidden">
+    <div class="video-box">
+      <div class="video-head">
+        <span id="video-modal-title"></span>
+        <button class="btn btn-ghost sm" onclick="closeVideoModal()">✕</button>
+      </div>
+      <video id="video-player" controls playsinline preload="metadata"></video>
     </div>
   </div>
 </main>

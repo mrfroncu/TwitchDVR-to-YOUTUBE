@@ -461,9 +461,13 @@ class App:
 
         btns = ttk.Frame(editor)
         btns.pack(fill="x", padx=6, pady=(0, 8))
-        ttk.Button(btns, text="Reset to generated metadata",
+        ttk.Button(btns, text="♻ Reset to generated metadata",
                    command=self._regenerate_selected).pack(side="left")
-        ttk.Button(btns, text="Add selected to queue ▶", style="Accent.TButton",
+        ttk.Button(btns, text="▶ Play video",
+                   command=self.play_selected_video).pack(side="left", padx=(6, 0))
+        ttk.Button(btns, text="📂 Open folder",
+                   command=self.open_selected_folder).pack(side="left", padx=(6, 0))
+        ttk.Button(btns, text="➕ Add selected to queue", style="Accent.TButton",
                    command=self.add_selected_to_queue).pack(side="right")
 
     # ------------------------------------------------------------- queue tab --
@@ -1924,6 +1928,28 @@ class App:
         sel = self.video_tree.selection()
         if sel and sel[0] in self.vods:
             open_in_file_manager(self.vods[sel[0]].folder)
+
+    def _selected_vod(self):
+        sel = self.video_tree.selection()
+        return self.vods.get(sel[0]) if sel else None
+
+    def play_selected_video(self) -> None:
+        """Open the selected VOD's video file in the default player."""
+        vod = self._selected_vod()
+        if vod is None:
+            messagebox.showinfo("Play", "Select a video in the list first.")
+            return
+        if vod.video_path is None or not vod.video_path.exists():
+            messagebox.showinfo("Play", "This VOD has no video file.")
+            return
+        open_in_file_manager(vod.video_path)
+
+    def open_selected_folder(self) -> None:
+        vod = self._selected_vod()
+        if vod is None:
+            messagebox.showinfo("Open folder", "Select a video in the list first.")
+            return
+        open_in_file_manager(vod.folder)
 
     # ---------------------------------------------------------------- editor --
     def _on_video_select(self, _event=None) -> None:

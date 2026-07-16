@@ -113,12 +113,21 @@ def _apply_windows(exe_url: str, progress=None) -> None:
     new_file = target.with_name(target.stem + ".update.exe")
     _download(exe_url, new_file, progress)
 
+    app_name = target.stem
     script = Path(tempfile.gettempdir()) / "twitchdvr2yt_update.ps1"
     script.write_text(f"""
 $ErrorActionPreference = 'SilentlyContinue'
-Wait-Process -Id {os.getpid()} -Timeout 120
 $src = '{new_file}'
 $dst = '{target}'
+
+# Wait for the Python child AND the onefile bootloader parent to be gone,
+# otherwise the exe is still locked and its _MEI temp dir is mid-cleanup.
+Wait-Process -Id {os.getpid()} -Timeout 120
+for ($i = 0; $i -lt 60; $i++) {{
+    if (-not (Get-Process -Name '{app_name}' -ErrorAction SilentlyContinue)) {{ break }}
+    Start-Sleep -Milliseconds 500
+}}
+
 for ($i = 0; $i -lt 30; $i++) {{
     try {{
         Move-Item -LiteralPath $src -Destination $dst -Force -ErrorAction Stop
@@ -127,7 +136,16 @@ for ($i = 0; $i -lt 30; $i++) {{
         Start-Sleep -Milliseconds 500
     }}
 }}
-Start-Process -FilePath $dst
+
+# Give antivirus real-time scanning a moment before the first launch,
+# then retry the launch if the bootloader gets killed mid-extraction.
+Start-Sleep -Seconds 2
+for ($i = 0; $i -lt 3; $i++) {{
+    $p = Start-Process -FilePath $dst -PassThru
+    Start-Sleep -Seconds 5
+    if ($p -and -not $p.HasExited) {{ break }}
+    Start-Sleep -Seconds 3
+}}
 Remove-Item -LiteralPath $PSCommandPath -Force
 """, encoding="utf-8")
     subprocess.Popen(
