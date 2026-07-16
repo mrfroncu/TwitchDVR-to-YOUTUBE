@@ -82,6 +82,18 @@ def can_self_update() -> bool:
     return sys.platform == "darwin" and platform.machine() == "arm64"
 
 
+def _clean_env() -> dict:
+    """Environment without PyInstaller bootloader variables.
+
+    A onefile app passes _PYI_*/_MEIPASS2 to child processes; if the update
+    helper (and the exe it relaunches) inherits them, the new bootloader
+    thinks it's a child and loads python DLLs from the OLD, already-deleted
+    _MEI directory -> "Failed to load Python DLL ... _MEIxxxxxx".
+    """
+    return {key: value for key, value in os.environ.items()
+            if not key.startswith("_PYI") and key != "_MEIPASS2"}
+
+
 def _download(url: str, target: Path, progress=None) -> None:
     with requests.get(url, stream=True, timeout=(30, 300)) as resp:
         resp.raise_for_status()
@@ -137,6 +149,11 @@ for ($i = 0; $i -lt 30; $i++) {{
     }}
 }}
 
+# Make sure no PyInstaller bootloader variables leak into the new
+# process, or it would try to reuse the old (deleted) _MEI directory.
+Get-ChildItem Env: | Where-Object {{ $_.Name -like '_PYI*' -or $_.Name -eq '_MEIPASS2' }} |
+    ForEach-Object {{ Remove-Item "Env:$($_.Name)" -ErrorAction SilentlyContinue }}
+
 # Give antivirus real-time scanning a moment before the first launch,
 # then retry the launch if the bootloader gets killed mid-extraction.
 Start-Sleep -Seconds 2
@@ -151,7 +168,8 @@ Remove-Item -LiteralPath $PSCommandPath -Force
     subprocess.Popen(
         ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
          "-WindowStyle", "Hidden", "-File", str(script)],
-        creationflags=subprocess.CREATE_NO_WINDOW, close_fds=True)
+        creationflags=subprocess.CREATE_NO_WINDOW, close_fds=True,
+        env=_clean_env())
 
 
 def _apply_macos(dmg_url: str, progress=None) -> None:
@@ -180,4 +198,5 @@ rm -f "$0"
 """, encoding="utf-8")
     script.chmod(0o755)
     subprocess.Popen(["/bin/bash", str(script)],
-                     start_new_session=True, close_fds=True)
+                     start_new_session=True, close_fds=True,
+                     env=_clean_env())
