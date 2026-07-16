@@ -20,6 +20,7 @@ from app.version import __version__  # noqa: E402
 datas = collect_data_files("googleapiclient.discovery_cache")
 datas += [(os.path.join(spec_dir, "assets"), "assets")]   # app icon etc.
 datas += [(os.path.join(spec_dir, "web", "static"), "web/static")]  # Studio UI
+datas += [(os.path.join(spec_dir, "CHANGELOG.md"), ".")]   # About → release notes
 for pkg in ("google-api-python-client", "google-auth", "google-auth-oauthlib",
             "google-auth-httplib2"):
     datas += copy_metadata(pkg)

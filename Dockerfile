@@ -7,7 +7,7 @@ RUN pip install --no-cache-dir -r web-requirements.txt
 
 COPY app/ app/
 COPY web/ web/
-COPY run_web.py VERSION ./
+COPY run_web.py VERSION CHANGELOG.md ./
 
 ENV APP_DIR=/config \
     VODS_DIR=/vods \

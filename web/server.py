@@ -190,6 +190,21 @@ def create_app() -> FastAPI:
         ctl.apply_update()
         return {"ok": True}
 
+    @app.post("/api/update/check")
+    def update_check():
+        return {"update": ctl.check_updates_now()}
+
+    @app.get("/api/changelog")
+    def changelog():
+        import sys
+        root = Path(getattr(sys, "_MEIPASS",
+                            Path(__file__).resolve().parent.parent))
+        try:
+            return {"changelog": (root / "CHANGELOG.md").read_text(
+                encoding="utf-8")}
+        except OSError:
+            return {"changelog": ""}
+
     # ------------------------------------------------------------ yt manager
     @app.get("/api/yt/videos")
     def yt_videos():

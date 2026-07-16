@@ -25,6 +25,7 @@
     <button class="nav-btn" data-view="playlists">📃 <span>Playlists</span></button>
     <button class="nav-btn" data-view="myyt">📺 <span>My YouTube</span></button>
     <button class="nav-btn" data-view="settings">⚙️ <span>Settings</span></button>
+    <button class="nav-btn" data-view="about">ℹ️ <span>About</span></button>
   </nav>
   <div class="sidebar-foot">
     <div id="channel-chip" class="chip chip-muted">Not connected</div>
@@ -362,6 +363,34 @@
       </div>
       <p class="muted">Server mode has no recycle bin — deletion is permanent and only
         ever happens after YouTube confirms the video exists.</p>
+    </div>
+  </section>
+
+  <!-- ============================================================= ABOUT -->
+  <section id="view-about" class="view hidden">
+    <header class="view-head"><h1>About</h1></header>
+    <div class="card pad about-card">
+      <img src="/static/icon.png" width="84" height="84" alt="">
+      <h2 class="about-title">TwitchDVR to YouTube</h2>
+      <div class="muted">Version <span id="about-version">…</span></div>
+      <p class="about-desc">Automated YouTube uploads for LiveStreamDVR Twitch
+        recordings — metadata, chapters, playlists, automation and channel
+        management.</p>
+      <div class="muted">Created by <b>Froncu</b></div>
+      <div class="field-row about-links">
+        <button class="btn btn-accent"
+          onclick="window.open('https://github.com/mrfroncu/TwitchDVR-to-YOUTUBE')">🌐 GitHub repository</button>
+        <button class="btn"
+          onclick="window.open('https://github.com/mrfroncu/TwitchDVR-to-YOUTUBE/releases')">📦 Releases</button>
+        <button id="about-check-updates" class="btn hidden"
+          onclick="checkUpdates()">⟳ Check for updates</button>
+      </div>
+      <p class="muted">MIT License — provided as is, without warranty.
+        Not affiliated with Google, YouTube or Twitch.</p>
+    </div>
+    <div class="card pad">
+      <h2>📜 Release notes</h2>
+      <div id="changelog" class="md">loading…</div>
     </div>
   </section>
 

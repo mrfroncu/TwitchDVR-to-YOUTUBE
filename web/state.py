@@ -148,6 +148,16 @@ class Controller:
         except Exception:
             pass
 
+    def check_updates_now(self) -> dict | None:
+        from app import updater
+        try:
+            self.update_info = updater.check_for_update()
+        except Exception as exc:
+            raise RuntimeError(f"update check failed: {exc}")
+        if self.update_info:
+            self.log(f"New version v{self.update_info['version']} is available.")
+        return self.update_info
+
     def apply_update(self) -> None:
         from app import updater
         if not self.update_info:

@@ -76,14 +76,67 @@ document.querySelectorAll(".nav-btn").forEach(btn => {
     view.classList.remove("hidden", "anim");
     void view.offsetWidth;          // restart the entry animation
     view.classList.add("anim");
+    if (btn.dataset.view === "about") loadChangelog();
   });
 });
+
+/* -------------------------------------------------------------- about */
+let changelogLoaded = false;
+async function loadChangelog() {
+  el("about-version").textContent = S ? S.version : "…";
+  if (changelogLoaded) return;
+  try {
+    const resp = await fetch("/api/changelog");
+    const data = await resp.json();
+    changelogLoaded = true;
+    el("changelog").innerHTML = data.changelog
+      ? mdToHtml(data.changelog)
+      : `<p class="muted">No bundled notes — see the
+         <a href="https://github.com/mrfroncu/TwitchDVR-to-YOUTUBE/releases"
+            target="_blank" rel="noopener">releases page</a>.</p>`;
+  } catch (e) {
+    el("changelog").textContent = "Could not load release notes.";
+  }
+}
+function mdToHtml(md) {
+  const lines = esc(md).split("\n");
+  const out = [];
+  let inList = false;
+  const closeList = () => { if (inList) { out.push("</ul>"); inList = false; } };
+  for (let ln of lines) {
+    ln = ln.replace(/`([^`]+)`/g, "<code>$1</code>")
+           .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+    if (ln.startsWith("### ")) { closeList(); out.push("<h4>" + ln.slice(4) + "</h4>"); }
+    else if (ln.startsWith("## ")) { closeList(); out.push("<h3>" + ln.slice(3) + "</h3>"); }
+    else if (ln.startsWith("# ")) { closeList(); out.push("<h2>" + ln.slice(2) + "</h2>"); }
+    else if (ln.startsWith("- ")) {
+      if (!inList) { out.push("<ul>"); inList = true; }
+      out.push("<li>" + ln.slice(2) + "</li>");
+    }
+    else if (ln.trim() === "") closeList();
+    else if (inList) out.push(ln);
+    else out.push("<p>" + ln + "</p>");
+  }
+  closeList();
+  return out.join("\n");
+}
+async function checkUpdates() {
+  const data = await api("/api/update/check");
+  if (data.update) {
+    el("update-banner").removeAttribute("data-dismissed");
+    toast(`Version ${data.update.version} is available — see the banner.`, true);
+  } else {
+    toast("You're running the latest version.", true);
+  }
+}
 
 /* ---------------------------------------------------------- desktop bits */
 function renderDesktop() {
   const isDesktop = !!S.desktop;
   el("browser-signin").classList.toggle("hidden", !isDesktop);
   el("desktop-settings").classList.toggle("hidden", !isDesktop);
+  el("about-check-updates").classList.toggle("hidden", !isDesktop);
+  el("about-version").textContent = S.version;
   if (isDesktop && document.activeElement !== el("set-ui-mode")) {
     el("set-ui-mode").value = S.cfg.ui_mode || "studio";
   }
