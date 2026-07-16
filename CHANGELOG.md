@@ -4,6 +4,23 @@ Release versions come from the `VERSION` file; each release's notes are the
 matching section of this file. Bump `VERSION` and add a section here to cut
 a new release.
 
+## 2.4.0 — 2026-07-16
+
+### 🎞 Video preview
+- Desktop: "▶ Play video" opens the selected VOD in your default player
+  (plus an explicit "📂 Open folder" button next to it).
+- Web/Studio: "▶ Preview" in the metadata editor plays the video in an
+  in-page pop-out player (seeking supported; Esc or backdrop click
+  closes). Raw `.ts` captures get a heads-up that browsers may not play
+  them.
+
+### 🛠 Updater fix
+- Fixed the "Failed to load Python DLL …\\_MEIxxxxxx\\python313.dll" error
+  after auto-updating. The swap script now waits for **all** app processes
+  (the onefile bootloader included), gives antivirus a moment to scan the
+  new exe, and retries the launch up to three times if the first boot gets
+  interrupted.
+
 ## 2.3.0 — 2026-07-16
 
 ### 🗑 Deletion overhaul

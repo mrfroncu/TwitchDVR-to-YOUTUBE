@@ -237,6 +237,19 @@ def create_app() -> FastAPI:
         ctl.auto_cycle()
         return {"ok": True}
 
+    @app.get("/api/video/{key}/stream")
+    def video_stream(key: str):
+        """Serve the local video file for the in-browser preview player
+        (FileResponse handles HTTP Range, so seeking works)."""
+        vod = ctl.vods.get(key)
+        if vod is None or vod.video_path is None or not vod.video_path.exists():
+            raise HTTPException(status_code=404, detail="video file not found")
+        suffix = vod.video_path.suffix.lower()
+        media = {"mp4": "video/mp4", ".mp4": "video/mp4",
+                 ".mkv": "video/x-matroska", ".ts": "video/mp2t"}.get(
+            suffix, "application/octet-stream")
+        return FileResponse(vod.video_path, media_type=media)
+
     @app.get("/")
     def index():
         return FileResponse(STATIC_DIR / "index.html")

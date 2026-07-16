@@ -242,6 +242,31 @@ input[type="radio"] { accent-color: var(--accent); }
 }
 .logbar.open .log-lines { display: block; }
 
+/* ------------------------------------------------------- video preview */
+.video-modal {
+  position: fixed; inset: 0; z-index: 80;
+  background: rgba(5, 7, 11, .88);
+  backdrop-filter: blur(6px);
+  display: grid; place-items: center;
+  animation: view-in .18s ease;
+}
+.video-box {
+  width: min(1100px, 94vw);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: 0 30px 90px rgba(0, 0, 0, .65);
+}
+.video-head {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 16px; border-bottom: 1px solid var(--border);
+  font-weight: 600;
+}
+.video-box video {
+  display: block; width: 100%; max-height: 74vh; background: #000;
+}
+
 /* --------------------------------------------------------------- login */
 .login-overlay {
   position: fixed; inset: 0; z-index: 100;
