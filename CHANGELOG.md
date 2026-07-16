@@ -4,6 +4,19 @@ Release versions come from the `VERSION` file; each release's notes are the
 matching section of this file. Bump `VERSION` and add a section here to cut
 a new release.
 
+## 2.5.1 — 2026-07-16
+
+### 🛠 Updater — real fix for the python313.dll error
+- Root cause found: the PyInstaller bootloader passes `_PYI_*`/`_MEIPASS2`
+  environment variables to child processes. The update helper inherited
+  them from the closing app, so the freshly started exe believed it was a
+  child process and tried to load Python DLLs from the old, already
+  deleted `_MEIxxxxxx` directory. The helper now launches with a scrubbed
+  environment and additionally clears those variables before restarting
+  the app (Windows and macOS).
+- Note: the fix takes effect when updating **from** this version onward —
+  the update that installs 2.5.1 still runs the old helper once.
+
 ## 2.5.0 — 2026-07-16
 
 ### ℹ️ About page in Studio / web
