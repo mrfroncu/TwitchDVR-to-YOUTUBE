@@ -103,11 +103,13 @@ def create_app() -> FastAPI:
 
     @app.post("/api/scan")
     def scan(body: ScanBody):
-        try:
-            count = ctl.scan(body.folder)
-        except FileNotFoundError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
-        return {"count": count}
+        # Runs in the background; the UI polls /api/state → scan for progress.
+        folder = (body.folder or ctl.cfg.get("vod_folder") or "").strip()
+        if folder and not Path(folder).is_dir():
+            raise HTTPException(status_code=400,
+                                detail=f"folder does not exist: {folder}")
+        ctl.scan_async(body.folder)
+        return {"started": True}
 
     @app.post("/api/settings")
     def settings(patch: dict):

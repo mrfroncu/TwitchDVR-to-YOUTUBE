@@ -162,6 +162,33 @@ function checkAll(on) {
 }
 async function doScan() {
   await api("/api/scan", { folder: el("folder-input").value || null });
+  renderScan();   // show "scanning" immediately; polling keeps it updated
+}
+function renderScan() {
+  const chip = el("scan-status");
+  const scan = (S && S.scan) || {};
+  el("scan-btn").disabled = !!scan.active;
+  if (scan.active) {
+    chip.textContent = scan.total
+      ? `⏳ Scanning ${scan.done}/${scan.total}: ${String(scan.current).slice(0, 32)}`
+      : "⏳ Scanning…";
+    chip.className = "chip chip-muted";
+    chip.classList.remove("hidden");
+  } else if (scan.error) {
+    chip.textContent = "❌ " + scan.error;
+    chip.className = "chip chip-err";
+    chip.classList.remove("hidden");
+  } else if (scan.found === 0) {
+    chip.textContent = "⚠ No VOD folders found in this folder";
+    chip.className = "chip chip-warn";
+    chip.classList.remove("hidden");
+  } else if (scan.found != null) {
+    chip.textContent = `✅ Found ${scan.found} VOD folder(s)`;
+    chip.className = "chip";
+    chip.classList.remove("hidden");
+  } else {
+    chip.classList.add("hidden");
+  }
 }
 async function bulk(action, value = "", confirmFirst = false) {
   if (!checked.size) { toast("Nothing checked — tick some rows first."); return; }
@@ -633,6 +660,7 @@ async function refresh() {
   renderAuth();
   renderAccounts();
   renderDesktop();
+  renderScan();
   renderCooldown();
   renderAutomation();
   renderSettings();
