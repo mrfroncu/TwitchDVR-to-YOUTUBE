@@ -4,6 +4,21 @@ Release versions come from the `VERSION` file; each release's notes are the
 matching section of this file. Bump `VERSION` and add a section here to cut
 a new release.
 
+## 2.3.0 — 2026-07-16
+
+### 🗑 Deletion overhaul
+- Manual cleanup now removes the **whole VOD folder** — video, chapters,
+  metadata, everything — not just the video file (desktop: Recycle Bin,
+  server: permanent, both clearly labeled). The automatic after-upload
+  setting still offers video-only or whole-folder.
+- Deletion runs in the background with live progress ("Recycling 3/12: …")
+  in the same status line/chip as scanning, and finishes with an explicit
+  result ("Recycled 12 of 12 folder(s)").
+- Fixed: deleted VODs stayed on the list until a manual rescan. Removed
+  folders now disappear immediately (including the automatic
+  delete-after-upload path) and a background rescan runs after bulk
+  deletion to keep everything in sync.
+
 ## 2.2.0 — 2026-07-16
 
 ### 🔍 Scan feedback

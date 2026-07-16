@@ -1628,9 +1628,8 @@ class App:
         threading.Thread(target=worker, daemon=True).start()
 
     def bulk_recycle(self) -> None:
-        mode = self.cfg.get("after_upload", "keep")
-        if mode == "keep":
-            mode = "trash_video"   # manual action defaults to video file only
+        """Manual cleanup: moves the WHOLE VOD folder (video + metadata) of
+        checked, verified uploads to the Recycle Bin — with live progress."""
         candidates = []
         for key in self._checked_video_keys():
             entry = self.registry.get(key)
@@ -1642,17 +1641,30 @@ class App:
                 "uploaded AND verified on YouTube can be recycled.\n"
                 "Use “Verify on YouTube” first if needed.")
             return
-        what = "whole VOD folders" if mode == "trash_folder" else "video files"
         if not messagebox.askyesno(
-                "Recycle", f"Move the {what} of {len(candidates)} verified "
-                "upload(s) to the Recycle Bin?"):
+                "Recycle", f"Move {len(candidates)} whole VOD folder(s) — video, "
+                "chapters, metadata, everything — to the Recycle Bin?"):
             return
-        done = 0
-        for key in candidates:
-            if self._recycle_vod(key, mode):
-                done += 1
-        self._log(f"Recycled local files of {done} upload(s).")
-        self.scan_folder()
+        if getattr(self, "_recycling", False):
+            self._log("A recycle operation is already running.")
+            return
+        self._recycling = True
+        self.scan_status_label.configure(
+            text=f"🗑 Recycling 0/{len(candidates)}…")
+        total = len(candidates)
+
+        def worker():
+            emit = lambda text: self.events.put({"type": "log", "text": text})  # noqa: E731
+            done = 0
+            for i, key in enumerate(candidates, start=1):
+                self.events.put({"type": "op_progress",
+                                 "text": f"🗑 Recycling {i}/{total}: {key[:48]}"})
+                if self._recycle_vod(key, "trash_folder", log=emit):
+                    done += 1
+            self.events.put({"type": "recycle_done", "done": done,
+                             "total": total})
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def bulk_reset_state(self) -> None:
         """Forget the upload record of checked rows so they can be re-uploaded."""
@@ -1873,10 +1885,12 @@ class App:
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _recycle_vod(self, key: str, mode: str) -> bool:
+    def _recycle_vod(self, key: str, mode: str, log=None) -> bool:
+        """Thread-safe when a `log` callback is supplied (no Tk calls then)."""
+        log = log or self._log
         if send2trash is None:
-            self._log("Recycle unavailable: the 'Send2Trash' package is not "
-                      "installed (pip install Send2Trash).")
+            log("Recycle unavailable: the 'Send2Trash' package is not "
+                "installed (pip install Send2Trash).")
             return False
         vod = self.vods.get(key)
         item = self._item_by_key(key)
@@ -1890,13 +1904,19 @@ class App:
         try:
             send2trash(str(target))
         except Exception as exc:
-            self._log(f"Could not recycle {target}: {exc}")
+            log(f"Could not recycle {target}: {exc}")
             return False
         entry = self.registry.setdefault(key, {})
         entry["local_deleted"] = True
         config.save_registry(self.registry)
-        self._log(f"Moved to Recycle Bin: {target}")
+        log(f"Moved to Recycle Bin: {target}")
         return True
+
+    def _forget_vod(self, key: str) -> None:
+        """Drop a vod whose folder no longer exists from the list."""
+        self.vods.pop(key, None)
+        self.metas.pop(key, None)
+        self.video_checked.discard(key)
 
     def _open_vod_folder(self, event) -> None:
         if self.video_tree.identify("region", event.x, event.y) != "cell":
@@ -2326,6 +2346,15 @@ class App:
                 text=f"⏳ Scanning… {ev['done']}/{ev['total']}: {ev['name'][:48]}")
         elif etype == "scan_done":
             self._finish_scan(ev)
+        elif etype == "op_progress":
+            self.scan_status_label.configure(text=ev["text"])
+        elif etype == "recycle_done":
+            self._recycling = False
+            self.scan_status_label.configure(
+                text=f"✅ Recycled {ev['done']} of {ev['total']} folder(s) — "
+                     "refreshing the list…")
+            self._log(f"Recycled {ev['done']} of {ev['total']} VOD folder(s).")
+            self.scan_folder()
         elif etype == "item_status":
             item = self._item_by_key(ev["key"])
             if item and ev["status"] == "done":
@@ -2342,6 +2371,8 @@ class App:
                 mode = self.cfg.get("after_upload", "keep")
                 if verified and mode != "keep":
                     if self._recycle_vod(item.key, mode):
+                        if mode == "trash_folder":
+                            self._forget_vod(item.key)
                         self._refresh_video_tree()
             if item and ev["status"] == "uploading":
                 self.current_label.configure(text=f"Uploading: {item.title}")
