@@ -20,6 +20,10 @@
   Twitch recordings — metadata, chapters, playlists, automation and channel management.
 </p>
 
+<p align="center">
+  <img src="docs/images/screenshot.png" width="860" alt="TwitchDVR to YouTube — main window">
+</p>
+
 ---
 
 A desktop app (plus a Docker/web version) that uploads
