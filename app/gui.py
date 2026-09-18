@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import queue
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -516,6 +517,8 @@ class App:
         check_all_videos = self._check_all_shortcut(self._set_all_videos_checked)
         self.video_tree.bind("<Control-a>", check_all_videos)
         self.video_tree.bind("<Command-a>", check_all_videos)   # macOS
+        self.video_tree.bind("<Button-3>", self._show_video_context_menu)
+        self.video_tree.bind("<Button-2>", self._show_video_context_menu)  # macOS
 
         # ---- bulk actions on checked rows (grouped: select | queue | set | maintain)
         bulk = ttk.LabelFrame(tab, text="Bulk actions (apply to checked rows)")
@@ -1469,6 +1472,15 @@ class App:
                   style="Muted.TLabel").pack(side="left")
 
         row = ttk.Frame(up)
+        row.pack(fill="x", padx=8, pady=(0, 2))
+        self.recycle_fallback_var = tk.BooleanVar(
+            value=bool(self.cfg.get("recycle_fallback_delete", False)))
+        ttk.Checkbutton(
+            row, text="⚠ If the Recycle Bin isn't available (e.g. some network "
+                      "drives), delete permanently instead of doing nothing",
+            variable=self.recycle_fallback_var).pack(side="left")
+
+        row = ttk.Frame(up)
         row.pack(fill="x", padx=8, pady=(6, 8))
         self.notify_var = tk.BooleanVar(value=bool(self.cfg.get("notify_subscribers", False)))
         ttk.Checkbutton(row, text="Notify subscribers on upload",
@@ -2035,9 +2047,9 @@ class App:
         self._save_queue_state()
         self._log(f"Set privacy '{privacy}' on {len(keys)} video(s).")
 
-    def bulk_verify(self) -> None:
-        keys = [k for k in self._checked_video_keys()
-                if self.registry.get(k, {}).get("video_id")]
+    def bulk_verify(self, keys: list[str] | None = None) -> None:
+        keys = keys if keys is not None else self._checked_video_keys()
+        keys = [k for k in keys if self.registry.get(k, {}).get("video_id")]
         if not keys:
             messagebox.showinfo(
                 "Verify", "None of the checked rows have been uploaded yet — "
@@ -2069,11 +2081,12 @@ class App:
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def bulk_recycle(self) -> None:
+    def bulk_recycle(self, keys: list[str] | None = None) -> None:
         """Manual cleanup: moves the WHOLE VOD folder (video + metadata) of
         checked, verified uploads to the Recycle Bin — with live progress."""
+        source_keys = keys if keys is not None else self._checked_video_keys()
         candidates = []
-        for key in self._checked_video_keys():
+        for key in source_keys:
             entry = self.registry.get(key)
             if entry and entry.get("verified") and not entry.get("local_deleted"):
                 candidates.append(key)
@@ -2083,9 +2096,16 @@ class App:
                 "uploaded AND verified on YouTube can be recycled.\n"
                 "Use “Verify on YouTube” first if needed.")
             return
+        fallback_note = ""
+        if self.cfg.get("recycle_fallback_delete", False):
+            fallback_note = (
+                "\n\n⚠ Permanent-delete fallback is enabled in Settings — if "
+                "the Recycle Bin isn't available for a file (e.g. some "
+                "network drives), it will be DELETED PERMANENTLY instead.")
         if not messagebox.askyesno(
                 "Recycle", f"Move {len(candidates)} whole VOD folder(s) — video, "
-                "chapters, metadata, everything — to the Recycle Bin?"):
+                "chapters, metadata, everything — to the Recycle Bin?"
+                + fallback_note):
             return
         if getattr(self, "_recycling", False):
             self._log("A recycle operation is already running.")
@@ -2108,9 +2128,10 @@ class App:
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def bulk_reset_state(self) -> None:
+    def bulk_reset_state(self, keys: list[str] | None = None) -> None:
         """Forget the upload record of checked rows so they can be re-uploaded."""
-        keys = [k for k in self._checked_video_keys() if k in self.registry]
+        keys = keys if keys is not None else self._checked_video_keys()
+        keys = [k for k in keys if k in self.registry]
         if not keys:
             messagebox.showinfo(
                 "Reset", "None of the checked rows have an upload record to reset.")
@@ -2348,15 +2369,32 @@ class App:
         target = vod.folder if mode == "trash_folder" else vod.video_path
         if target is None or not target.exists():
             return False
+        permanently_deleted = False
         try:
             send2trash(str(target))
         except Exception as exc:
-            log(f"Could not recycle {target}: {exc}")
-            return False
+            if not self.cfg.get("recycle_fallback_delete", False):
+                log(f"Could not recycle {target}: {exc} "
+                    "(enable the permanent-delete fallback in Settings if this "
+                    "is a network drive that doesn't support the Recycle Bin)")
+                return False
+            try:
+                if target.is_dir():
+                    shutil.rmtree(target)
+                else:
+                    target.unlink()
+            except Exception as exc2:
+                log(f"Could not recycle {target} ({exc}), and the permanent-"
+                    f"delete fallback also failed: {exc2}")
+                return False
+            permanently_deleted = True
         entry = self.registry.setdefault(key, {})
         entry["local_deleted"] = True
         config.save_registry(self.registry)
-        log(f"Moved to Recycle Bin: {target}")
+        if permanently_deleted:
+            log(f"Recycle Bin wasn't available — permanently deleted: {target}")
+        else:
+            log(f"Moved to Recycle Bin: {target}")
         return True
 
     def _forget_vod(self, key: str) -> None:
@@ -2393,6 +2431,49 @@ class App:
             messagebox.showinfo("Open folder", "Select a video in the list first.")
             return
         open_in_file_manager(vod.folder)
+
+    @staticmethod
+    def _open_video_url(video_id: str) -> None:
+        import webbrowser
+        webbrowser.open(f"https://youtu.be/{video_id}")
+
+    def _show_video_context_menu(self, event) -> None:
+        row = self.video_tree.identify_row(event.y)
+        if not row or row not in self.vods:
+            return
+        # Right-clicking a row that isn't part of the current selection
+        # replaces the selection with just that row (standard behavior);
+        # right-clicking a row that's already selected keeps the whole
+        # selection so the menu's actions apply to all of it.
+        if row not in self.video_tree.selection():
+            self.video_tree.selection_set(row)
+        keys = list(self.video_tree.selection())
+        entry = self.registry.get(row)
+        c = self.colors
+        menu = tk.Menu(self.root, tearoff=False, bg=c["surface"], fg=c["fg"],
+                       activebackground=c["accent"], activeforeground="#ffffff",
+                       relief="flat", borderwidth=0)
+        menu.add_command(label="▶ Play video", command=self.play_selected_video)
+        menu.add_command(label="📂 Open folder", command=self.open_selected_folder)
+        menu.add_command(label="➕ Add to queue", command=self.add_selected_to_queue)
+        menu.add_command(label="♻ Reset to generated metadata",
+                         command=self._regenerate_selected)
+        if entry and entry.get("video_id"):
+            menu.add_separator()
+            menu.add_command(
+                label="🌐 Open on YouTube",
+                command=lambda: self._open_video_url(entry["video_id"]))
+            menu.add_command(label="✅ Verify on YouTube",
+                             command=lambda: self.bulk_verify(keys))
+            menu.add_command(label="↺ Reset upload state",
+                             command=lambda: self.bulk_reset_state(keys))
+            if entry.get("verified") and not entry.get("local_deleted"):
+                menu.add_command(label="🗑 Recycle local files",
+                                 command=lambda: self.bulk_recycle(keys))
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
 
     # ---------------------------------------------------------------- editor --
     def _on_video_select(self, _event=None) -> None:
@@ -2910,11 +2991,24 @@ class App:
             self.scan_status_label.configure(text=ev["text"])
         elif etype == "recycle_done":
             self._recycling = False
-            self.scan_status_label.configure(
-                text=f"✅ Recycled {ev['done']} of {ev['total']} folder(s) — "
-                     "refreshing the list…")
-            self._log(f"Recycled {ev['done']} of {ev['total']} VOD folder(s).")
-            self.scan_folder()
+            done, total = ev["done"], ev["total"]
+            if done == 0:
+                self.scan_status_label.configure(
+                    text=f"❌ Recycled 0 of {total} folder(s) — nothing was "
+                         "removed, see the log below for why.")
+                self._log(f"Recycle failed for all {total} folder(s) — "
+                          "nothing was removed.")
+                messagebox.showwarning(
+                    "Recycle failed",
+                    f"Could not recycle any of the {total} folder(s) — see "
+                    "the Log panel on the Queue & Progress tab for the "
+                    "specific error(s). Nothing was deleted.")
+            else:
+                self.scan_status_label.configure(
+                    text=f"✅ Recycled {done} of {total} folder(s) — "
+                         "refreshing the list…")
+                self._log(f"Recycled {done} of {total} VOD folder(s).")
+                self.scan_folder()
         elif etype == "item_status":
             item = self._item_by_key(ev["key"])
             if item and ev["status"] == "done":
@@ -3252,6 +3346,7 @@ class App:
         self.cfg["made_for_kids"] = bool(self.kids_var.get())
         self.cfg["after_upload"] = config.AFTER_UPLOAD_CHOICES.get(
             self.after_upload_var.get(), "keep")
+        self.cfg["recycle_fallback_delete"] = bool(self.recycle_fallback_var.get())
         try:
             self.cfg["daily_upload_limit"] = max(0, int(self.daily_limit_var.get()))
         except ValueError:
