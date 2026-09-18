@@ -4,6 +4,26 @@ Release versions come from the `VERSION` file; each release's notes are the
 matching section of this file. Bump `VERSION` and add a section here to cut
 a new release.
 
+## 2.6.2 — 2026-09-18
+
+### 🖱️ Right-click menu on the Videos tab
+- Right-click (or secondary-click on macOS) a video for a quick menu: play,
+  open folder, add to queue, reset metadata, and — once it's been uploaded —
+  open on YouTube, verify, reset upload state, and recycle local files.
+
+### 🐛 "Recycle local files" failing silently
+- If moving a VOD folder to the Recycle Bin failed (common on some network
+  drives — macOS's Send2Trash doesn't always support them), the app quietly
+  logged one easy-to-miss line, showed a green "✅ Recycled 0 of N" status
+  anyway, and then just rescanned the folder — which looked exactly like
+  "nothing happened, it just searched again." It now shows a clear ❌ status,
+  pops up a warning pointing at the log, and skips the pointless rescan when
+  nothing was actually removed.
+- New opt-in Settings toggle: "If the Recycle Bin isn't available (e.g. some
+  network drives), delete permanently instead of doing nothing." Off by
+  default — recycling still just fails safely unless you turn this on. The
+  confirmation dialog reminds you it's enabled every time you use Recycle.
+
 ## 2.6.1 — 2026-09-18
 
 ### 🐛 Fixes for the checkboxes, shortcuts and notifications from 2.6.0
