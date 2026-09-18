@@ -49,6 +49,18 @@ def next_slot(registry: dict, limit: int) -> datetime:
     return times[-limit] + WINDOW
 
 
+def _pacific_midnight_today() -> datetime | None:
+    """Start of the current day in US Pacific time (tz-aware), or None if
+    the system's tz database is unavailable. Shared so the reactive cooldown
+    below and the proactive quota panel agree on the same reset boundary."""
+    try:
+        from zoneinfo import ZoneInfo
+        pacific = datetime.now(ZoneInfo("America/Los_Angeles"))
+        return pacific.replace(hour=0, minute=0, second=0, microsecond=0)
+    except Exception:
+        return None
+
+
 def quota_cooldown(reason: str, hours: float | None = None) -> datetime:
     """How long to wait after YouTube said no. `hours` overrides the wait
     for the channel upload limit (uploadLimitExceeded)."""
@@ -60,14 +72,53 @@ def quota_cooldown(reason: str, hours: float | None = None) -> datetime:
             wait = WINDOW
         return now + wait            # channel limit: rolling ~24 h by default
     # API quota: resets at midnight Pacific time
-    try:
-        from zoneinfo import ZoneInfo
-        pacific = datetime.now(ZoneInfo("America/Los_Angeles"))
-        nxt = (pacific + timedelta(days=1)).replace(hour=0, minute=10,
-                                                    second=0, microsecond=0)
-        return nxt.astimezone(timezone.utc)
-    except Exception:                # tz database unavailable
+    midnight = _pacific_midnight_today()
+    if midnight is None:             # tz database unavailable
         return now + timedelta(hours=8)
+    return (midnight + timedelta(days=1, minutes=10)).astimezone(timezone.utc)
+
+
+QUOTA_DAILY_UNITS = 10000
+QUOTA_UNIT_COST = 1600
+
+
+def units_used_today(registry: dict, unit_cost: int = QUOTA_UNIT_COST) -> int:
+    """API units spent since the last Pacific midnight, counted from
+    successful uploads already recorded in the registry (uploads.json) —
+    reuses that data instead of tracking a separate running counter."""
+    midnight = _pacific_midnight_today()
+    if midnight is None:
+        return 0
+    boundary = midnight.astimezone(timezone.utc)
+    count = sum(1 for entry in registry.values()
+               if not entry.get("failed")
+               and (dt := _parse(entry.get("uploaded_at"))) is not None
+               and dt >= boundary)
+    return count * unit_cost
+
+
+def uploads_remaining_today(registry: dict, daily_quota: int = QUOTA_DAILY_UNITS,
+                            unit_cost: int = QUOTA_UNIT_COST) -> int:
+    used = units_used_today(registry, unit_cost)
+    return max(0, (daily_quota - used) // unit_cost)
+
+
+def eta_for_queue(pending_count: int, remaining_today: int,
+                  daily_quota: int = QUOTA_DAILY_UNITS,
+                  unit_cost: int = QUOTA_UNIT_COST) -> str:
+    """Rough finish estimate for `pending_count` queued uploads at the
+    current daily quota pace (~6 uploads/day by default)."""
+    if pending_count <= 0:
+        return "done"
+    if pending_count <= remaining_today:
+        return "today"
+    per_day = max(1, daily_quota // unit_cost)
+    extra = pending_count - remaining_today
+    # `extra` is what's left once today's remaining slots are used up, so the
+    # number of *additional* days is just the ceiling — no separate "+1 for
+    # today" term (today already contributed `remaining_today`, possibly 0).
+    days = -(-extra // per_day)
+    return f"~{days} day(s)"
 
 
 def get_cooldown(cfg: dict) -> datetime | None:

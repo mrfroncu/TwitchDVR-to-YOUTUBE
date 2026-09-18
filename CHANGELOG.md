@@ -4,6 +4,59 @@ Release versions come from the `VERSION` file; each release's notes are the
 matching section of this file. Bump `VERSION` and add a section here to cut
 a new release.
 
+## 2.6.0 — 2026-09-18
+
+### 🗑️ Studio removed — classic is now the only desktop interface
+- The "Studio" desktop mode (the modern web UI shown in a native pywebview
+  window) has been removed. Classic Tkinter is now the only desktop
+  interface, so every new feature lands in one place instead of two.
+- If your Settings had Interface set to "studio", the app now simply opens
+  classic — the old setting is ignored.
+- The headless Docker/browser deployment (`docker compose up -d`, port 4091)
+  is completely unaffected — it's a separate, still fully supported way to
+  run the app on a server without a screen.
+
+### ℹ️ Release notes now show up in the desktop app too
+- The About tab renders this very changelog in a scrollable panel, so you
+  can see what changed without leaving the app.
+
+### 🔎 Filters and a live summary on the Videos tab
+- New filter bar: search by streamer/title, filter by upload status, by
+  game, or by a date range — all combinable.
+- A summary line under the filters shows "N shown of M total" plus a
+  breakdown of ready/queued/uploaded/verified/failed/not-finalized counts.
+- Checking a row, then filtering it out of view, no longer drops it from
+  bulk actions — it stays checked in the background.
+
+### 💾 The upload queue survives a restart
+- Queue order, each item's status, and any metadata you edited before
+  queueing are now saved to disk (`queue_state.json`) and restored on the
+  next launch. Queue up 300 videos, close the app or reboot mid-batch, and
+  it picks back up in the same place. A file that was mid-upload when the
+  app closed restarts from the beginning next time — same as a network-drop
+  retry already did within a session.
+
+### 🖱️ Click-and-drag checkboxes, plus keyboard shortcuts
+- Check or uncheck a whole range of rows by clicking and dragging across
+  the checkbox column, on the Videos, Queue and My YouTube tabs.
+- New shortcuts: Space toggles the focused row, Ctrl+A checks everything in
+  the current list, Delete removes the selected item from the queue, and
+  Ctrl+F jumps to the Videos search box.
+
+### 🔍 UI scale for small or high-DPI screens
+- Settings → Appearance has a new 75% / 100% / 125% / 150% scale, applied
+  instantly without restarting the app.
+
+### ⚡ My YouTube and Playlists load automatically
+- Both tabs now fetch their data the first time you visit them in a
+  session — no more clicking "Load videos" / "Refresh playlists" first.
+
+### 📊 Quota panel and optional notifications
+- Queue & Progress now shows today's YouTube API quota usage and a rough
+  ETA for when the current queue will finish, given the ~6 uploads/day cap.
+- Optional OS notifications (native on macOS, via a lightweight helper on
+  Windows) when the queue finishes or an individual upload fails.
+
 ## 2.5.1 — 2026-07-16
 
 ### 🛠 Updater — real fix for the python313.dll error

@@ -28,6 +28,7 @@ APP_DIR = _app_dir()
 CONFIG_PATH = APP_DIR / "config.json"
 TOKEN_PATH = APP_DIR / "token.json"
 REGISTRY_PATH = APP_DIR / "uploads.json"
+QUEUE_STATE_PATH = APP_DIR / "queue_state.json"
 
 DEFAULTS = {
     "client_secret_path": "",
@@ -42,7 +43,7 @@ DEFAULTS = {
     "after_upload": "keep",         # keep | trash_video | trash_folder
     "theme": "midnight",            # midnight | dark | light
     "ui_style": "modern",           # modern | classic (fonts/spacing/effects)
-    "ui_mode": "studio",            # studio (web UI in native window) | classic (tkinter)
+    "ui_scale": 1.0,                # 0.75 | 1.0 | 1.25 | 1.5 — multiplier on top of ui_style
     # Automation
     "auto_scan": False,
     "auto_scan_interval_min": 10,
@@ -87,6 +88,16 @@ def _ensure_dir() -> None:
     APP_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _atomic_write_json(path: Path, data) -> None:
+    """Write via a temp file + os.replace so a crash/power-loss mid-write
+    never leaves a truncated/corrupt file behind."""
+    _ensure_dir()
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, path)
+
+
 def load_config() -> dict:
     cfg = dict(DEFAULTS)
     try:
@@ -98,9 +109,7 @@ def load_config() -> dict:
 
 
 def save_config(cfg: dict) -> None:
-    _ensure_dir()
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=2)
+    _atomic_write_json(CONFIG_PATH, cfg)
 
 
 def load_registry() -> dict:
@@ -113,6 +122,20 @@ def load_registry() -> dict:
 
 
 def save_registry(reg: dict) -> None:
-    _ensure_dir()
-    with open(REGISTRY_PATH, "w", encoding="utf-8") as f:
-        json.dump(reg, f, indent=2)
+    _atomic_write_json(REGISTRY_PATH, reg)
+
+
+def load_queue_state() -> dict:
+    """{"version": 1, "queue": [QueueItem-ish dicts], "metas": {vod_key: meta}}."""
+    try:
+        with open(QUEUE_STATE_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if isinstance(data, dict) and "queue" in data and "metas" in data:
+                return data
+    except (OSError, ValueError):
+        pass
+    return {"version": 1, "queue": [], "metas": {}}
+
+
+def save_queue_state(data: dict) -> None:
+    _atomic_write_json(QUEUE_STATE_PATH, data)
