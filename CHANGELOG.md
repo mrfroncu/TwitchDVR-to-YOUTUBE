@@ -4,6 +4,25 @@ Release versions come from the `VERSION` file; each release's notes are the
 matching section of this file. Bump `VERSION` and add a section here to cut
 a new release.
 
+## 2.6.1 — 2026-09-18
+
+### 🐛 Fixes for the checkboxes, shortcuts and notifications from 2.6.0
+- **Checkboxes were hard to see** — swapped the thin ☑/☐ glyphs for bold ✅/⬜
+  ones and widened the checkbox column.
+- **Click-and-drag checkbox selection didn't work** — the drag required the
+  cursor to stay inside the narrow checkbox column the whole time, which any
+  normal mouse/trackpad movement broke immediately. Dragging now only cares
+  about where the drag started.
+- **macOS shortcuts** — Ctrl+A/Ctrl+F now also work as Cmd+A/Cmd+F, and
+  removing a queue item now also works on the key macOS actually labels
+  "delete" (Tk calls it BackSpace).
+- **Date filters** — added a 📅 button next to the From/To fields that opens
+  a small calendar popup, instead of typing YYYY-MM-DD by hand.
+- **Misleading "queue finished" notification** — it now reports actual
+  done/failed counts instead of a blanket "all processed" message, and
+  uploads pausing on a quota/daily limit or failing to start now also send
+  a notification (previously only a full successful finish did).
+
 ## 2.6.0 — 2026-09-18
 
 ### 🗑️ Studio removed — classic is now the only desktop interface

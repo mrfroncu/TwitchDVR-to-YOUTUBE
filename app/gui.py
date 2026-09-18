@@ -23,7 +23,7 @@ try:
 except ImportError:      # running from source without the dependency
     send2trash = None
 
-CHECKED, UNCHECKED = "☑", "☐"
+CHECKED, UNCHECKED = "✅", "⬜"
 _INLINE_MD_RE = re.compile(r"(\*\*[^*]+\*\*|`[^`]+`)")
 
 # Fluent-inspired palettes applied to the native 'clam' theme. Everything is
@@ -391,7 +391,11 @@ class App:
             return "break"
 
         def on_motion(event):
-            if not state["dragging"] or tree.identify_column(event.x) != "#1":
+            # Once a drag starts on the checkbox column, keep painting
+            # whatever row the cursor is over vertically — do NOT also
+            # require staying inside that (narrow) column horizontally, or
+            # any natural mouse/trackpad drift kills the drag immediately.
+            if not state["dragging"]:
                 return
             key = tree.identify_row(event.y)
             if key and (key in checked) != state["target"]:
@@ -467,18 +471,20 @@ class App:
         self.video_filter_date_from = tk.StringVar()
         date_from_entry = ttk.Entry(
             filt, textvariable=self.video_filter_date_from, width=10)
-        date_from_entry.pack(side="left", padx=(4, 6))
+        date_from_entry.pack(side="left", padx=(4, 0))
         date_from_entry.bind("<FocusOut>", self._on_video_filter_changed)
         date_from_entry.bind("<Return>", self._on_video_filter_changed)
+        ttk.Button(filt, text="📅", width=3, command=lambda: self._open_calendar_picker(
+            self.video_filter_date_from, date_from_entry)).pack(side="left", padx=(2, 6))
         ttk.Label(filt, text="To:").pack(side="left")
         self.video_filter_date_to = tk.StringVar()
         date_to_entry = ttk.Entry(
             filt, textvariable=self.video_filter_date_to, width=10)
-        date_to_entry.pack(side="left", padx=(4, 4))
+        date_to_entry.pack(side="left", padx=(4, 0))
         date_to_entry.bind("<FocusOut>", self._on_video_filter_changed)
         date_to_entry.bind("<Return>", self._on_video_filter_changed)
-        ttk.Label(filt, text="(YYYY-MM-DD)", style="Muted.TLabel").pack(
-            side="left", padx=(0, 10))
+        ttk.Button(filt, text="📅", width=3, command=lambda: self._open_calendar_picker(
+            self.video_filter_date_to, date_to_entry)).pack(side="left", padx=(2, 10))
         ttk.Button(filt, text="✕ Clear filters",
                    command=self._clear_video_filters).pack(side="left")
 
@@ -489,7 +495,7 @@ class App:
                 "chapters", "status")
         self.video_tree = ttk.Treeview(tab, columns=cols, show="headings",
                                        selectmode="extended", height=10)
-        headings = {"check": (UNCHECKED, 36), "date": ("Date", 90),
+        headings = {"check": (UNCHECKED, 46), "date": ("Date", 90),
                     "streamer": ("Streamer", 100),
                     "title": ("Stream title", 300), "duration": ("Length", 70),
                     "size": ("Size", 80), "chapters": ("Chapters", 70),
@@ -507,8 +513,9 @@ class App:
         self._bind_checkbox_column(self.video_tree, self.video_checked)
         self.video_tree.bind("<<TreeviewSelect>>", self._on_video_select)
         self.video_tree.bind("<Double-1>", self._open_vod_folder)
-        self.video_tree.bind(
-            "<Control-a>", self._check_all_shortcut(self._set_all_videos_checked))
+        check_all_videos = self._check_all_shortcut(self._set_all_videos_checked)
+        self.video_tree.bind("<Control-a>", check_all_videos)
+        self.video_tree.bind("<Command-a>", check_all_videos)   # macOS
 
         # ---- bulk actions on checked rows (grouped: select | queue | set | maintain)
         bulk = ttk.LabelFrame(tab, text="Bulk actions (apply to checked rows)")
@@ -610,6 +617,7 @@ class App:
 
         self.videos_tab_frame = tab
         self.root.bind_all("<Control-f>", self._focus_video_search)
+        self.root.bind_all("<Command-f>", self._focus_video_search)   # macOS
 
     def _focus_video_search(self, _event=None):
         if self.notebook.nametowidget(self.notebook.select()) is not self.videos_tab_frame:
@@ -631,7 +639,7 @@ class App:
         cols = ("check", "pos", "title", "size", "privacy", "status", "detail")
         self.queue_tree = ttk.Treeview(tab, columns=cols, show="headings",
                                        selectmode="browse", height=12)
-        headings = {"check": (UNCHECKED, 36), "pos": ("#", 40),
+        headings = {"check": (UNCHECKED, 46), "pos": ("#", 40),
                     "title": ("Title", 330), "size": ("Size", 85),
                     "privacy": ("Privacy", 70), "status": ("Status", 90),
                     "detail": ("Progress / result", 280)}
@@ -643,14 +651,17 @@ class App:
         self.queue_checked: set[str] = set()
         self._bind_checkbox_column(self.queue_tree, self.queue_checked)
         self.queue_tree.bind("<Double-1>", self._on_queue_double)
-        self.queue_tree.bind(
-            "<Control-a>", self._check_all_shortcut(self._set_all_queue_checked))
+        check_all_queue = self._check_all_shortcut(self._set_all_queue_checked)
+        self.queue_tree.bind("<Control-a>", check_all_queue)
+        self.queue_tree.bind("<Command-a>", check_all_queue)   # macOS
 
         def remove_via_delete_key(_event=None):
             self.remove_queue_item()
             return "break"
 
         self.queue_tree.bind("<Delete>", remove_via_delete_key)
+        # On macOS the key labeled "delete" is Tk's BackSpace, not Delete.
+        self.queue_tree.bind("<BackSpace>", remove_via_delete_key)
         self.queue_tree.pack(fill="both", expand=True, padx=8, pady=(8, 4))
 
         ctl = ttk.Frame(tab)
@@ -873,7 +884,7 @@ class App:
         cols = ("check", "date", "title", "duration", "privacy", "views", "vstatus")
         self.yt_tree = ttk.Treeview(tab, columns=cols, show="headings",
                                     selectmode="extended", height=8)
-        headings = {"check": (UNCHECKED, 36), "date": ("Published", 90),
+        headings = {"check": (UNCHECKED, 46), "date": ("Published", 90),
                     "title": ("Title", 460), "duration": ("Length", 80),
                     "privacy": ("Privacy", 80), "views": ("Views", 80),
                     "vstatus": ("Status", 90)}
@@ -894,8 +905,9 @@ class App:
         self._bind_checkbox_column(self.yt_tree, self.yt_checked)
         self.yt_tree.bind("<Double-1>", self._on_yt_double)
         self.yt_tree.bind("<<TreeviewSelect>>", self._on_yt_select)
-        self.yt_tree.bind(
-            "<Control-a>", self._check_all_shortcut(self._set_all_yt_checked))
+        check_all_yt = self._check_all_shortcut(self._set_all_yt_checked)
+        self.yt_tree.bind("<Control-a>", check_all_yt)
+        self.yt_tree.bind("<Command-a>", check_all_yt)   # macOS
 
         act = ttk.LabelFrame(tab, text="Actions (apply to checked videos)")
         act.pack(fill="x", padx=8, pady=8)
@@ -1854,6 +1866,88 @@ class App:
         self.video_filter_date_from.set("")
         self.video_filter_date_to.set("")
         self._refresh_video_tree()
+
+    def _open_calendar_picker(self, var: tk.StringVar, anchor: tk.Widget) -> None:
+        """Small popup month-grid calendar for picking a YYYY-MM-DD date
+        filter — no new dependency, just a Toplevel + a day-number grid."""
+        import calendar as cal_mod
+        try:
+            base = datetime.strptime(var.get().strip(), "%Y-%m-%d").date()
+        except ValueError:
+            base = datetime.now().date()
+        state = {"year": base.year, "month": base.month}
+        c = self.colors
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Pick a date")
+        dlg.configure(bg=c["bg"])
+        dlg.transient(self.root)
+        dlg.resizable(False, False)
+        dlg.geometry(f"+{anchor.winfo_rootx()}"
+                     f"+{anchor.winfo_rooty() + anchor.winfo_height() + 4}")
+
+        header = ttk.Frame(dlg)
+        header.pack(fill="x", padx=8, pady=(8, 2))
+        title_lbl = ttk.Label(header, anchor="center")
+        ttk.Button(header, text="‹", width=3, command=lambda: shift(-1)
+                   ).pack(side="left")
+        title_lbl.pack(side="left", expand=True, fill="x")
+        ttk.Button(header, text="›", width=3, command=lambda: shift(1)
+                   ).pack(side="left")
+
+        grid = ttk.Frame(dlg)
+        grid.pack(padx=8, pady=4)
+
+        def commit(value: str) -> None:
+            var.set(value)
+            dlg.destroy()
+            self._on_video_filter_changed()
+
+        def render() -> None:
+            for w in grid.winfo_children():
+                w.destroy()
+            title_lbl.configure(
+                text=f"{cal_mod.month_name[state['month']]} {state['year']}")
+            for col, wd in enumerate(("Mo", "Tu", "We", "Th", "Fr", "Sa", "Su")):
+                ttk.Label(grid, text=wd, style="Muted.TLabel", width=3,
+                         anchor="center").grid(row=0, column=col)
+            today = datetime.now().date()
+            weeks = cal_mod.Calendar(firstweekday=0).monthdayscalendar(
+                state["year"], state["month"])
+            for row_i, week in enumerate(weeks, start=1):
+                for col, day in enumerate(week):
+                    if day == 0:
+                        continue
+                    is_today = (day, state["month"], state["year"]) == \
+                        (today.day, today.month, today.year)
+                    ttk.Button(
+                        grid, text=str(day), width=3,
+                        style="Accent.TButton" if is_today else "TButton",
+                        command=lambda d=day: commit(
+                            f"{state['year']:04d}-{state['month']:02d}-{d:02d}")
+                    ).grid(row=row_i, column=col, padx=1, pady=1)
+
+        def shift(delta: int) -> None:
+            m = state["month"] + delta
+            y = state["year"]
+            if m < 1:
+                m, y = 12, y - 1
+            elif m > 12:
+                m, y = 1, y + 1
+            state["month"], state["year"] = m, y
+            render()
+
+        footer = ttk.Frame(dlg)
+        footer.pack(fill="x", padx=8, pady=(2, 8))
+        ttk.Button(footer, text="Today",
+                   command=lambda: commit(datetime.now().strftime("%Y-%m-%d"))
+                   ).pack(side="left")
+        ttk.Button(footer, text="Clear", command=lambda: commit("")
+                   ).pack(side="left", padx=(4, 0))
+        ttk.Button(footer, text="Close", command=dlg.destroy).pack(side="right")
+
+        render()
+        dlg.grab_set()
 
     def _update_video_summary(self, filtered: list[Vod]) -> None:
         counts = {"ready": 0, "queued": 0, "uploaded": 0, "verified": 0,
@@ -2909,6 +3003,9 @@ class App:
                          f"{limits.fmt_local(until)}, resumes automatically.")
                 self._log(f"Cooldown until {limits.fmt_local(until)} "
                           f"({ev.get('detail', '')}). Uploads resume automatically.")
+                notify.notify("Uploads paused — quota limit hit",
+                              f"Cooling down until {limits.fmt_local(until)} "
+                              "— resumes automatically.")
             elif reason == "daily_limit":
                 until = limits.next_slot(self.registry,
                                          int(self.cfg.get("daily_upload_limit", 0) or 0))
@@ -2918,13 +3015,29 @@ class App:
                     text=f"⏳ Daily limit reached — next upload at "
                          f"{limits.fmt_local(until)}, resumes automatically.")
                 self._log(f"Daily limit reached; next slot at {limits.fmt_local(until)}.")
+                notify.notify("Uploads paused — daily limit reached",
+                              f"Next upload at {limits.fmt_local(until)}.")
+            elif reason == "error":
+                self.current_label.configure(text="⚠ Upload queue stopped — see the log.")
+                notify.notify("Upload queue stopped",
+                              "Could not start uploading — check the app's "
+                              "log for details.")
             else:
                 self.current_label.configure(
                     text={"finished": "Queue finished.",
                           "paused": "Paused."}.get(reason, "Idle."))
                 if reason == "finished":
-                    notify.notify("Upload queue finished",
-                                  "All queued videos have been processed.")
+                    done = sum(1 for i in self.queue_items if i.status == "done")
+                    failed = sum(1 for i in self.queue_items if i.status == "error")
+                    if failed:
+                        notify.notify(
+                            "Upload queue finished — with errors",
+                            f"{done} uploaded, {failed} failed. Check the "
+                            "Queue tab / log for details.")
+                    elif done:
+                        notify.notify("Upload queue finished",
+                                      f"All {done} queued video(s) uploaded "
+                                      "successfully.")
             self._save_queue_state()
         elif etype == "auth_ok":
             self.credentials = ev["creds"]
