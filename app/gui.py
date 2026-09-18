@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -12,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from . import auth, config, limits, playlists, scanner, updater, ytmanager
+from . import auth, config, limits, notify, playlists, scanner, updater, ytmanager
 from .scanner import Vod
 from .uploader import QueueItem, UploadWorker, verify_video
 from .version import __version__
@@ -23,6 +24,7 @@ except ImportError:      # running from source without the dependency
     send2trash = None
 
 CHECKED, UNCHECKED = "☑", "☐"
+_INLINE_MD_RE = re.compile(r"(\*\*[^*]+\*\*|`[^`]+`)")
 
 # Fluent-inspired palettes applied to the native 'clam' theme. Everything is
 # drawn by Tk primitives (no image sprites), so resizing stays fast.
@@ -96,6 +98,9 @@ class App:
         self.vods: dict[str, Vod] = {}
         self.metas: dict[str, dict] = {}     # per-VOD editable metadata
         self.queue_items: list[QueueItem] = []
+        self._queue_state_restored = False
+        self._yt_loaded_once = False
+        self._playlists_loaded_once = False
         self.worker: UploadWorker | None = None
         self.events: queue.Queue = queue.Queue()
         self.credentials = None
@@ -108,8 +113,9 @@ class App:
         self._auto_countdown = int(self.cfg.get("auto_scan_interval_min", 10)) * 60
 
         root.title(f"TwitchDVR to YouTube Uploader  v{__version__}")
-        root.geometry("1240x820")
-        root.minsize(1000, 640)
+        ui_scale = float(self.cfg.get("ui_scale", 1.0) or 1.0)
+        root.geometry(f"{round(1240 * ui_scale)}x{round(820 * ui_scale)}")
+        root.minsize(round(1000 * ui_scale), round(640 * ui_scale))
 
         self.colors = THEME_COLORS.get(self.cfg.get("theme", "dark"),
                                        THEME_COLORS["dark"])
@@ -156,14 +162,21 @@ class App:
         theme = theme if theme in THEME_COLORS else "dark"
         self.colors = c = THEME_COLORS[theme]
         modern = self.cfg.get("ui_style", "modern") != "classic"
+        scale = float(self.cfg.get("ui_scale", 1.0) or 1.0)
         family = self._font_family()
-        base_font = (family, 10 if modern else 9)
+        base_font = (family, round((10 if modern else 9) * scale))
         bold_font = (family + " Semibold" if sys.platform == "win32" else family,
-                     10 if modern else 9)
-        btn_pad = (14, 8) if modern else (10, 5)
-        tab_pad = (18, 10) if modern else (16, 8)
-        row_h = 30 if modern else 26
-        field_pad = 6 if modern else 4
+                     round((10 if modern else 9) * scale))
+        btn_pad = tuple(round(v * scale) for v in ((14, 8) if modern else (10, 5)))
+        tab_pad = tuple(round(v * scale) for v in ((18, 10) if modern else (16, 8)))
+        row_h = round((30 if modern else 26) * scale)
+        field_pad = round((6 if modern else 4) * scale)
+        if not hasattr(self, "_base_tk_scaling"):
+            self._base_tk_scaling = self.root.tk.call("tk", "scaling")
+        try:
+            self.root.tk.call("tk", "scaling", self._base_tk_scaling * scale)
+        except tk.TclError:
+            pass
         style = ttk.Style()
         try:
             style.theme_use("clam")
@@ -255,9 +268,12 @@ class App:
             tree.tag_configure("uploading", foreground=c["info"])
             tree.tag_configure("odd_row", background=c["odd"])
         for txt in (self.desc_text, self.log_text, self.auto_log_text,
-                    self.yt_desc_text, self.desc_template_text):
+                    self.yt_desc_text, self.desc_template_text,
+                    self.changelog_text):
             txt.configure(bg=c["field_bg"], fg=c["fg"], insertbackground=c["fg"],
                           relief="flat", highlightthickness=0)
+        self.changelog_text.tag_configure("h2", foreground=c["accent"])
+        self.changelog_text.tag_configure("h3", foreground=c["info"])
         self.yt_pl_list.configure(bg=c["field_bg"], fg=c["fg"], relief="flat",
                                   highlightthickness=0,
                                   selectbackground=c["accent"],
@@ -305,14 +321,27 @@ class App:
         config.save_config(self.cfg)
         self._apply_theme(self.cfg.get("theme", "midnight"))
 
-    def _on_ui_mode_change(self, _event=None) -> None:
-        self.cfg["ui_mode"] = self.ui_mode_var.get()
+    def _on_ui_scale_change(self, _event=None) -> None:
+        try:
+            scale = int(self.ui_scale_var.get().rstrip("%")) / 100.0
+        except ValueError:
+            scale = 1.0
+        self.cfg["ui_scale"] = scale
         config.save_config(self.cfg)
-        self._log(f"Interface set to '{self.cfg['ui_mode']}' — restart the app "
-                  "to apply.")
+        self._apply_theme(self.cfg.get("theme", "midnight"))
+        min_w = round(1000 * scale)
+        min_h = round(640 * scale)
+        self.root.minsize(min_w, min_h)
 
     def _on_tab_changed(self, _event=None) -> None:
-        """Subtle cross-fade when switching tabs (modern style only)."""
+        current = self.notebook.nametowidget(self.notebook.select())
+        if current is getattr(self, "manager_tab_frame", None) and not self._yt_loaded_once:
+            self.load_yt_videos(quiet=True)
+        elif current is getattr(self, "playlists_tab_frame", None) \
+                and not self._playlists_loaded_once:
+            self.refresh_playlists(quiet=True)
+
+        # Subtle cross-fade when switching tabs (modern style only).
         if self.cfg.get("ui_style", "modern") == "classic":
             return
         try:
@@ -332,6 +361,65 @@ class App:
         except tk.TclError:
             pass
 
+    # ------------------------------------------------------- checkbox columns --
+    def _bind_checkbox_column(self, tree: ttk.Treeview, checked: set[str]) -> None:
+        """Shared click / click-and-drag / spacebar toggling for the fake
+        checkbox column ("#1") used by the Videos, Queue and My YouTube
+        trees. `checked` must be the actual set object the tree's rows read
+        from — it's captured once here and mutated in place from then on,
+        so callers must never do `self.xxx_checked = ...` (see the note on
+        _set_all_yt_checked)."""
+        state = {"dragging": False, "target": False}
+
+        def paint(key: str, want_checked: bool) -> None:
+            if want_checked:
+                checked.add(key)
+            else:
+                checked.discard(key)
+            tree.set(key, "check", CHECKED if want_checked else UNCHECKED)
+
+        def on_press(event):
+            if tree.identify("region", event.x, event.y) != "cell" or \
+                    tree.identify_column(event.x) != "#1":
+                return None
+            key = tree.identify_row(event.y)
+            if not key:
+                return None
+            state["target"] = key not in checked
+            paint(key, state["target"])
+            state["dragging"] = True
+            return "break"
+
+        def on_motion(event):
+            if not state["dragging"] or tree.identify_column(event.x) != "#1":
+                return
+            key = tree.identify_row(event.y)
+            if key and (key in checked) != state["target"]:
+                paint(key, state["target"])
+
+        def on_release(_event):
+            state["dragging"] = False
+
+        def on_space(_event):
+            key = tree.focus()
+            if key:
+                paint(key, key not in checked)
+            return "break"
+
+        tree.bind("<Button-1>", on_press)
+        tree.bind("<B1-Motion>", on_motion)
+        tree.bind("<ButtonRelease-1>", on_release)
+        tree.bind("<space>", on_space)
+
+    @staticmethod
+    def _check_all_shortcut(setter):
+        """Ctrl+A handler factory: `setter` is one of the tree's own
+        _set_all_*_checked(bool) functions."""
+        def handler(_event=None):
+            setter(True)
+            return "break"
+        return handler
+
     # ------------------------------------------------------------ videos tab --
     def _build_videos_tab(self) -> None:
         tab = ttk.Frame(self.notebook)
@@ -348,6 +436,54 @@ class App:
         self.scan_btn.pack(side="left", padx=(6, 0))
         self.scan_status_label = ttk.Label(tab, text="", style="Muted.TLabel")
         self.scan_status_label.pack(anchor="w", padx=10, pady=(0, 2))
+
+        filt = ttk.Frame(tab)
+        filt.pack(fill="x", padx=8, pady=(0, 4))
+        ttk.Label(filt, text="🔎").pack(side="left")
+        self.video_filter_text = tk.StringVar()
+        self._video_search_after_id: str | None = None
+        self.video_filter_text.trace_add(
+            "write", lambda *_: self._on_video_search_typed())
+        self.video_search_entry = ttk.Entry(
+            filt, textvariable=self.video_filter_text, width=20)
+        self.video_search_entry.pack(side="left", padx=(2, 10))
+        ttk.Label(filt, text="Status:").pack(side="left")
+        self.video_filter_status = tk.StringVar(value="all")
+        status_box = ttk.Combobox(
+            filt, textvariable=self.video_filter_status, width=13, state="readonly",
+            values=("all", "ready", "queued", "uploaded", "verified",
+                    "failed", "not_finalized"))
+        status_box.pack(side="left", padx=(4, 10))
+        status_box.bind("<<ComboboxSelected>>", self._on_video_filter_changed)
+        ttk.Label(filt, text="Game:").pack(side="left")
+        self.video_filter_game = tk.StringVar(value="(all)")
+        self.video_filter_game_combo = ttk.Combobox(
+            filt, textvariable=self.video_filter_game, width=16, state="readonly",
+            values=["(all)"])
+        self.video_filter_game_combo.pack(side="left", padx=(4, 10))
+        self.video_filter_game_combo.bind(
+            "<<ComboboxSelected>>", self._on_video_filter_changed)
+        ttk.Label(filt, text="From:").pack(side="left")
+        self.video_filter_date_from = tk.StringVar()
+        date_from_entry = ttk.Entry(
+            filt, textvariable=self.video_filter_date_from, width=10)
+        date_from_entry.pack(side="left", padx=(4, 6))
+        date_from_entry.bind("<FocusOut>", self._on_video_filter_changed)
+        date_from_entry.bind("<Return>", self._on_video_filter_changed)
+        ttk.Label(filt, text="To:").pack(side="left")
+        self.video_filter_date_to = tk.StringVar()
+        date_to_entry = ttk.Entry(
+            filt, textvariable=self.video_filter_date_to, width=10)
+        date_to_entry.pack(side="left", padx=(4, 4))
+        date_to_entry.bind("<FocusOut>", self._on_video_filter_changed)
+        date_to_entry.bind("<Return>", self._on_video_filter_changed)
+        ttk.Label(filt, text="(YYYY-MM-DD)", style="Muted.TLabel").pack(
+            side="left", padx=(0, 10))
+        ttk.Button(filt, text="✕ Clear filters",
+                   command=self._clear_video_filters).pack(side="left")
+
+        self.video_summary_label = ttk.Label(tab, text="", style="Muted.TLabel")
+        self.video_summary_label.pack(anchor="w", padx=10, pady=(0, 4))
 
         cols = ("check", "date", "streamer", "title", "duration", "size",
                 "chapters", "status")
@@ -368,9 +504,11 @@ class App:
         self.video_tree.configure(yscrollcommand=vsb.set)
         self.video_tree.pack(side="top", fill="both", expand=False, padx=(8, 0))
         vsb.place(in_=self.video_tree, relx=1.0, rely=0, relheight=1.0, anchor="ne")
-        self.video_tree.bind("<Button-1>", self._on_video_tree_click)
+        self._bind_checkbox_column(self.video_tree, self.video_checked)
         self.video_tree.bind("<<TreeviewSelect>>", self._on_video_select)
         self.video_tree.bind("<Double-1>", self._open_vod_folder)
+        self.video_tree.bind(
+            "<Control-a>", self._check_all_shortcut(self._set_all_videos_checked))
 
         # ---- bulk actions on checked rows (grouped: select | queue | set | maintain)
         bulk = ttk.LabelFrame(tab, text="Bulk actions (apply to checked rows)")
@@ -470,6 +608,21 @@ class App:
         ttk.Button(btns, text="➕ Add selected to queue", style="Accent.TButton",
                    command=self.add_selected_to_queue).pack(side="right")
 
+        self.videos_tab_frame = tab
+        self.root.bind_all("<Control-f>", self._focus_video_search)
+
+    def _focus_video_search(self, _event=None):
+        if self.notebook.nametowidget(self.notebook.select()) is not self.videos_tab_frame:
+            return None
+        # Don't steal focus while the user is typing in another field on this
+        # tab (title/tags/description/date filters) — Tk's Entry/Text widgets
+        # have their own default Ctrl+F (cursor-forward) binding to respect.
+        focused = self.root.focus_get()
+        if isinstance(focused, (tk.Entry, tk.Text, ttk.Entry, ttk.Combobox)):
+            return None
+        self.video_search_entry.focus_set()
+        return "break"
+
     # ------------------------------------------------------------- queue tab --
     def _build_queue_tab(self) -> None:
         tab = ttk.Frame(self.notebook)
@@ -488,8 +641,16 @@ class App:
                                    anchor="center" if col in ("check", "pos", "size", "privacy", "status") else "w")
         self.queue_tree.heading("check", command=self._toggle_all_queue)
         self.queue_checked: set[str] = set()
-        self.queue_tree.bind("<Button-1>", self._on_queue_tree_click)
+        self._bind_checkbox_column(self.queue_tree, self.queue_checked)
         self.queue_tree.bind("<Double-1>", self._on_queue_double)
+        self.queue_tree.bind(
+            "<Control-a>", self._check_all_shortcut(self._set_all_queue_checked))
+
+        def remove_via_delete_key(_event=None):
+            self.remove_queue_item()
+            return "break"
+
+        self.queue_tree.bind("<Delete>", remove_via_delete_key)
         self.queue_tree.pack(fill="both", expand=True, padx=8, pady=(8, 4))
 
         ctl = ttk.Frame(tab)
@@ -517,6 +678,9 @@ class App:
                    ).pack(side="right", padx=(0, 10))
         ttk.Button(ctl, text="▲", width=3, command=lambda: self.move_queue_item(-1)
                    ).pack(side="right", padx=(0, 4))
+
+        self.quota_label = ttk.Label(tab, text="", style="Muted.TLabel")
+        self.quota_label.pack(anchor="w", padx=8, pady=(0, 4))
 
         prog = ttk.Frame(tab)
         prog.pack(fill="x", padx=8, pady=4)
@@ -727,9 +891,11 @@ class App:
         self.yt_tree.configure(yscrollcommand=ysb.set)
         self.yt_tree.pack(fill="both", expand=True, padx=(8, 0))
         ysb.place(in_=self.yt_tree, relx=1.0, rely=0, relheight=1.0, anchor="ne")
-        self.yt_tree.bind("<Button-1>", self._on_yt_tree_click)
+        self._bind_checkbox_column(self.yt_tree, self.yt_checked)
         self.yt_tree.bind("<Double-1>", self._on_yt_double)
         self.yt_tree.bind("<<TreeviewSelect>>", self._on_yt_select)
+        self.yt_tree.bind(
+            "<Control-a>", self._check_all_shortcut(self._set_all_yt_checked))
 
         act = ttk.LabelFrame(tab, text="Actions (apply to checked videos)")
         act.pack(fill="x", padx=8, pady=8)
@@ -828,16 +994,7 @@ class App:
         ttk.Button(row, text="＋ Add",
                    command=self.yt_add_one_to_playlist).pack(side="left", padx=(4, 0))
 
-    def _on_yt_tree_click(self, event):
-        if self.yt_tree.identify("region", event.x, event.y) == "cell" and \
-                self.yt_tree.identify_column(event.x) == "#1":
-            vid = self.yt_tree.identify_row(event.y)
-            if vid:
-                self.yt_checked.symmetric_difference_update({vid})
-                self.yt_tree.set(vid, "check",
-                                 CHECKED if vid in self.yt_checked else UNCHECKED)
-            return "break"
-        return None
+        self.manager_tab_frame = tab
 
     def _on_yt_double(self, event) -> None:
         # only a double-click on an actual row opens the video (headers sort)
@@ -884,7 +1041,12 @@ class App:
                         v["privacy"], f"{v['views']:,}", v["upload_status"]))
 
     def _set_all_yt_checked(self, checked: bool) -> None:
-        self.yt_checked = {v["id"] for v in self.yt_videos} if checked else set()
+        # Mutate in place (not `self.yt_checked = ...`) so the drag-select
+        # bindings in _bind_checkbox_column, which captured this set object
+        # once at tree-build time, keep seeing every update.
+        self.yt_checked.clear()
+        if checked:
+            self.yt_checked.update(v["id"] for v in self.yt_videos)
         for vid in self.yt_tree.get_children():
             self.yt_tree.set(vid, "check", CHECKED if checked else UNCHECKED)
 
@@ -894,11 +1056,13 @@ class App:
     def _yt_checked_ids(self) -> list[str]:
         return [v for v in self.yt_tree.get_children() if v in self.yt_checked]
 
-    def load_yt_videos(self) -> None:
+    def load_yt_videos(self, quiet: bool = False) -> None:
         if self.credentials is None:
-            messagebox.showwarning("My YouTube", "Not signed in — add an account "
-                                   "in Settings first.")
+            if not quiet:
+                messagebox.showwarning("My YouTube", "Not signed in — add an account "
+                                       "in Settings first.")
             return
+        self._yt_loaded_once = True
         creds = self.credentials
         self.mgr_count_label.configure(text="loading…")
 
@@ -1180,13 +1344,15 @@ class App:
         style_box.bind("<<ComboboxSelected>>", self._on_ui_style_change)
         ttk.Label(row, text="modern = larger type, roomier layout, animations",
                   style="Muted.TLabel").pack(side="left", padx=8)
-        ttk.Label(row, text="Interface:").pack(side="left", padx=(16, 0))
-        self.ui_mode_var = tk.StringVar(value=self.cfg.get("ui_mode", "studio"))
-        mode_box = ttk.Combobox(row, textvariable=self.ui_mode_var, width=8,
-                                state="readonly", values=("studio", "classic"))
-        mode_box.pack(side="left", padx=6)
-        mode_box.bind("<<ComboboxSelected>>", self._on_ui_mode_change)
-        ttk.Label(row, text="studio = the new interface (restart required)",
+        ttk.Label(row, text="UI scale:").pack(side="left", padx=(16, 0))
+        self.ui_scale_var = tk.StringVar(
+            value=f"{round(float(self.cfg.get('ui_scale', 1.0)) * 100)}%")
+        scale_box = ttk.Combobox(row, textvariable=self.ui_scale_var, width=6,
+                                 state="readonly",
+                                 values=("75%", "100%", "125%", "150%"))
+        scale_box.pack(side="left", padx=6)
+        scale_box.bind("<<ComboboxSelected>>", self._on_ui_scale_change)
+        ttk.Label(row, text="for small/high-DPI screens where the UI doesn't fit",
                   style="Muted.TLabel").pack(side="left", padx=8)
 
         acct = ttk.LabelFrame(tab, text="YouTube account")
@@ -1362,14 +1528,16 @@ class App:
 
     # ------------------------------------------------------------- about tab --
     def _build_about_tab(self) -> None:
-        tab = ttk.Frame(self.notebook)
-        self.notebook.add(tab, text=" ℹ About ")
+        outer = ttk.Frame(self.notebook)
+        self.notebook.add(outer, text=" ℹ About ")
+        tab = self._make_scrollable(outer)
+
         box = ttk.Frame(tab)
-        box.pack(expand=True)
+        box.pack(pady=(20, 0))
         try:
             img = tk.PhotoImage(file=str(_asset_path("icon-192.png")))
             self._about_logo = img.subsample(2, 2)
-            ttk.Label(box, image=self._about_logo).pack(pady=(26, 12))
+            ttk.Label(box, image=self._about_logo).pack(pady=(6, 12))
         except Exception:
             pass
         ttk.Label(box, text="TwitchDVR to YouTube",
@@ -1399,6 +1567,87 @@ class App:
                             "YouTube is a trademark of Google LLC; this project "
                             "is not affiliated with Google or Twitch.",
                   style="Muted.TLabel", justify="center").pack(pady=(18, 0))
+
+        ttk.Separator(tab, orient="horizontal").pack(fill="x", padx=20, pady=(24, 10))
+        ttk.Label(tab, text="Release notes", font=("Segoe UI Semibold", 12)
+                  ).pack(anchor="w", padx=20)
+        notes_frame = ttk.Frame(tab)
+        notes_frame.pack(fill="both", expand=True, padx=20, pady=(6, 20))
+        self.changelog_text = tk.Text(notes_frame, height=18, wrap="word",
+                                      state="disabled", borderwidth=0,
+                                      highlightthickness=0)
+        csb = ttk.Scrollbar(notes_frame, orient="vertical",
+                           command=self.changelog_text.yview)
+        self.changelog_text.configure(yscrollcommand=csb.set)
+        self.changelog_text.pack(side="left", fill="both", expand=True)
+        csb.pack(side="left", fill="y")
+        self._load_changelog()
+
+    def _load_changelog(self) -> None:
+        try:
+            text = _changelog_path().read_text(encoding="utf-8")
+        except OSError:
+            text = "_No bundled release notes found._"
+        self._render_markdown(self.changelog_text, text)
+
+    def _render_markdown(self, widget: tk.Text, md: str) -> None:
+        """Minimal renderer for this repo's CHANGELOG.md shape only: `## `/`### `
+        headings, `- ` bullets (with soft-wrapped continuation lines that carry
+        no leading `-`), and inline `**bold**`/`` `code` `` spans. Not a general
+        Markdown renderer — CHANGELOG.md has no tables/nested lists/links."""
+        family = self._font_family()
+        c = self.colors
+        widget.tag_configure("h2", font=(family, 15, "bold"), foreground=c["accent"],
+                             spacing1=14, spacing3=6)
+        widget.tag_configure("h3", font=(family, 12, "bold"), foreground=c["info"],
+                             spacing1=10, spacing3=4)
+        widget.tag_configure("bullet", lmargin1=18, lmargin2=34, spacing1=2, spacing3=2)
+        widget.tag_configure("bold", font=(family, 10, "bold"))
+        widget.tag_configure("code", font=("Courier New", 10))
+
+        blocks: list[tuple[str, str]] = []
+        for raw in md.splitlines():
+            line = raw.rstrip()
+            if line.startswith("## "):
+                blocks.append(("h2", line[3:].strip()))
+            elif line.startswith("### "):
+                blocks.append(("h3", line[4:].strip()))
+            elif line.startswith("- "):
+                blocks.append(("bullet", line[2:].strip()))
+            elif not line.strip():
+                blocks.append(("blank", ""))
+            elif blocks and blocks[-1][0] == "bullet":
+                blocks[-1] = ("bullet", blocks[-1][1] + " " + line.strip())
+            else:
+                blocks.append(("text", line.strip()))
+
+        widget.configure(state="normal")
+        widget.delete("1.0", "end")
+        for kind, text in blocks:
+            if kind == "blank":
+                continue
+            if kind == "bullet":
+                self._insert_inline(widget, "•  " + text, ("bullet",))
+                widget.insert("end", "\n")
+            elif kind in ("h2", "h3"):
+                self._insert_inline(widget, text, (kind,))
+                widget.insert("end", "\n")
+            else:
+                self._insert_inline(widget, text, ())
+                widget.insert("end", "\n")
+        widget.configure(state="disabled")
+
+    @staticmethod
+    def _insert_inline(widget: tk.Text, text: str, base_tags: tuple = ()) -> None:
+        for part in _INLINE_MD_RE.split(text):
+            if not part:
+                continue
+            if part.startswith("**") and part.endswith("**") and len(part) > 3:
+                widget.insert("end", part[2:-2], base_tags + ("bold",))
+            elif part.startswith("`") and part.endswith("`") and len(part) > 1:
+                widget.insert("end", part[1:-1], base_tags + ("code",))
+            else:
+                widget.insert("end", part, base_tags)
 
     def _build_status_bar(self) -> None:
         bar = ttk.Frame(self.root)
@@ -1467,6 +1716,12 @@ class App:
         for vod in vods:
             if vod.key not in self.metas:
                 self.metas[vod.key] = self._generate_meta(vod)
+        games = sorted({g for vod in vods for g in vod.games})
+        self.video_filter_game_combo.configure(values=["(all)"] + games)
+        if self.video_filter_game.get() not in ("(all)", *games):
+            self.video_filter_game.set("(all)")
+        if not self._queue_state_restored:
+            self._restore_queue_state()
         self._refresh_video_tree()
         if ev.get("error"):
             self.scan_status_label.configure(text=f"❌ Scan failed: {ev['error']}")
@@ -1507,28 +1762,116 @@ class App:
             "playlist_choice": "(default)",
         }
 
-    def _video_status(self, vod: Vod) -> tuple[str, str]:
-        """(status text, tree tag)"""
+    def _video_status_category(self, vod: Vod) -> str:
+        """Stable classification key for filtering (unlike _video_status's
+        free-text): ready | queued | uploaded | verified | failed | not_finalized."""
         entry = self.registry.get(vod.key)
         if entry:
             if entry.get("failed"):
-                return "failed on YouTube — requeue or reset", "problem"
-            if entry.get("local_deleted"):
-                return "uploaded ✓ · recycled", "uploaded"
-            if entry.get("verified"):
-                return "uploaded ✓ verified", "uploaded"
-            return "uploaded (unverified)", "uploaded"
+                return "failed"
+            return "verified" if entry.get("verified") else "uploaded"
         for item in self.queue_items:
             if item.key == vod.key and item.status in ("queued", "uploading", "verifying"):
-                return item.status, ""
+                return "queued"
         if vod.problems:
+            return "not_finalized"
+        return "ready"
+
+    def _video_status(self, vod: Vod) -> tuple[str, str]:
+        """(status text, tree tag)"""
+        entry = self.registry.get(vod.key)
+        category = self._video_status_category(vod)
+        if category == "failed":
+            return "failed on YouTube — requeue or reset", "problem"
+        if category in ("uploaded", "verified"):
+            if entry.get("local_deleted"):
+                return "uploaded ✓ · recycled", "uploaded"
+            if category == "verified":
+                return "uploaded ✓ verified", "uploaded"
+            return "uploaded (unverified)", "uploaded"
+        if category == "queued":
+            for item in self.queue_items:
+                if item.key == vod.key and item.status in (
+                        "queued", "uploading", "verifying"):
+                    return item.status, ""
+        if category == "not_finalized":
             return ", ".join(vod.problems), "problem"
         return "ready", ""
+
+    @staticmethod
+    def _parse_filter_date(text: str):
+        text = text.strip()
+        if not text:
+            return None
+        try:
+            return datetime.strptime(text, "%Y-%m-%d").date()
+        except ValueError:
+            return None
+
+    def _filtered_vods(self) -> list[Vod]:
+        text = self.video_filter_text.get().strip().lower()
+        status = self.video_filter_status.get()
+        game = self.video_filter_game.get()
+        date_from = self._parse_filter_date(self.video_filter_date_from.get())
+        date_to = self._parse_filter_date(self.video_filter_date_to.get())
+        result = []
+        for vod in self.vods.values():
+            if text:
+                haystack = f"{vod.streamer_name} {vod.streamer_login} {vod.stream_title}"
+                if text not in haystack.lower():
+                    continue
+            if status != "all" and self._video_status_category(vod) != status:
+                continue
+            if game != "(all)" and game not in vod.games:
+                continue
+            if date_from or date_to:
+                if vod.started_at is None:
+                    continue
+                d = vod.started_at.date()
+                if date_from and d < date_from:
+                    continue
+                if date_to and d > date_to:
+                    continue
+            result.append(vod)
+        return result
+
+    def _on_video_filter_changed(self, *_args) -> None:
+        self._refresh_video_tree()
+
+    def _on_video_search_typed(self) -> None:
+        """Debounced text-filter trigger: rebuilding the tree on every single
+        keystroke gets janky with large libraries, so wait for a short pause
+        in typing before re-filtering."""
+        if self._video_search_after_id is not None:
+            self.root.after_cancel(self._video_search_after_id)
+        self._video_search_after_id = self.root.after(
+            250, self._on_video_filter_changed)
+
+    def _clear_video_filters(self) -> None:
+        self.video_filter_text.set("")
+        self.video_filter_status.set("all")
+        self.video_filter_game.set("(all)")
+        self.video_filter_date_from.set("")
+        self.video_filter_date_to.set("")
+        self._refresh_video_tree()
+
+    def _update_video_summary(self, filtered: list[Vod]) -> None:
+        counts = {"ready": 0, "queued": 0, "uploaded": 0, "verified": 0,
+                 "failed": 0, "not_finalized": 0}
+        for vod in self.vods.values():
+            cat = self._video_status_category(vod)
+            counts[cat] = counts.get(cat, 0) + 1
+        self.video_summary_label.configure(
+            text=f"{len(filtered)} shown of {len(self.vods)} total — "
+                 f"{counts['ready']} ready, {counts['queued']} queued, "
+                 f"{counts['uploaded']} uploaded, {counts['verified']} verified, "
+                 f"{counts['failed']} failed, {counts['not_finalized']} not finalized")
 
     def _refresh_video_tree(self) -> None:
         selected = set(self.video_tree.selection())
         self.video_tree.delete(*self.video_tree.get_children())
-        for i, vod in enumerate(self.vods.values()):
+        filtered = self._filtered_vods()
+        for i, vod in enumerate(filtered):
             status, tag = self._video_status(vod)
             dur = ""
             if vod.duration:
@@ -1545,30 +1888,29 @@ class App:
         for iid in selected:
             if self.video_tree.exists(iid):
                 self.video_tree.selection_add(iid)
+        self._update_video_summary(filtered)
 
     # ------------------------------------------------------------ checkboxes --
-    def _on_video_tree_click(self, event):
-        if self.video_tree.identify("region", event.x, event.y) == "cell" and \
-                self.video_tree.identify_column(event.x) == "#1":
-            key = self.video_tree.identify_row(event.y)
-            if key:
-                self.video_checked.symmetric_difference_update({key})
-                self.video_tree.set(
-                    key, "check",
-                    CHECKED if key in self.video_checked else UNCHECKED)
-            return "break"
-        return None
-
     def _set_all_videos_checked(self, checked: bool) -> None:
-        self.video_checked = set(self.vods) if checked else set()
+        visible = {vod.key for vod in self._filtered_vods()}
+        if checked:
+            self.video_checked |= visible
+        else:
+            self.video_checked -= visible
         for key in self.video_tree.get_children():
-            self.video_tree.set(key, "check", CHECKED if checked else UNCHECKED)
+            self.video_tree.set(key, "check",
+                                CHECKED if key in self.video_checked else UNCHECKED)
 
     def _toggle_all_videos(self) -> None:
-        self._set_all_videos_checked(len(self.video_checked) < len(self.vods))
+        visible = {vod.key for vod in self._filtered_vods()}
+        self._set_all_videos_checked(not (visible and visible <= self.video_checked))
 
     def _checked_video_keys(self) -> list[str]:
-        return [k for k in self.video_tree.get_children() if k in self.video_checked]
+        """All checked keys still present after the latest scan, in scan/date
+        order — regardless of whether a filter currently hides them from the
+        tree. Iterates `self.vods` (not the `video_checked` set directly) so
+        bulk actions process rows in the order they're shown, not hash order."""
+        return [k for k in self.vods if k in self.video_checked]
 
     # -------------------------------------------------------------- bulk ops --
     def bulk_add_checked(self) -> None:
@@ -1586,6 +1928,7 @@ class App:
         if self._editing_key in keys:
             self._editing_key = None
             self._on_video_select()
+        self._save_queue_state()
         self._log(f"Reset metadata for {len(keys)} video(s).")
 
     def bulk_apply_privacy(self) -> None:
@@ -1595,6 +1938,7 @@ class App:
             self.metas[key]["privacy"] = privacy
         if self._editing_key in keys:
             self.privacy_var.set(privacy)
+        self._save_queue_state()
         self._log(f"Set privacy '{privacy}' on {len(keys)} video(s).")
 
     def bulk_verify(self) -> None:
@@ -1697,6 +2041,7 @@ class App:
             self.metas[key]["playlist_choice"] = choice
         if self._editing_key in keys:
             self.playlist_choice_var.set(choice)
+        self._save_queue_state()
         self._log(f"Set playlist '{choice}' on {len(keys)} video(s).")
 
     # --------------------------------------------------------------- playlists --
@@ -1826,6 +2171,8 @@ class App:
                   style="Muted.TLabel", wraplength=1000, justify="left"
                   ).pack(anchor="w", padx=8, pady=(2, 8))
 
+        self.playlists_tab_frame = tab
+
     def _open_playlist_in_browser(self, _event=None) -> None:
         sel = self.playlist_tree.selection()
         if not sel:
@@ -1844,12 +2191,14 @@ class App:
         self.cfg["playlist_template"] = self.pl_template_var.get()
         config.save_config(self.cfg)
 
-    def refresh_playlists(self) -> None:
+    def refresh_playlists(self, quiet: bool = False) -> None:
         if self.credentials is None:
             self.credentials = auth.load_credentials()
         if self.credentials is None:
-            messagebox.showwarning("Playlists", "Not signed in to YouTube.")
+            if not quiet:
+                messagebox.showwarning("Playlists", "Not signed in to YouTube.")
             return
+        self._playlists_loaded_once = True
         creds = self.credentials
 
         def worker():
@@ -1978,6 +2327,7 @@ class App:
         meta["privacy"] = self.privacy_var.get()
         meta["playlist_choice"] = self.playlist_choice_var.get() or "(default)"
         meta["description"] = self.desc_text.get("1.0", "end-1c")
+        self._save_queue_state()
 
     def _update_title_count(self) -> None:
         n = len(self.title_var.get())
@@ -1992,12 +2342,90 @@ class App:
         if len(sel) == 1:
             self._editing_key = None
             self._on_video_select()
+        self._save_queue_state()
 
     # ----------------------------------------------------------------- queue --
     def add_selected_to_queue(self) -> None:
         self._save_editor()
         keys = [k for k in self.video_tree.selection() if k in self.vods]
         self._enqueue(keys)
+
+    def _save_queue_state(self) -> None:
+        """Persist the pending queue + per-video edited metadata so a restart
+        (e.g. mid-way through a 300-video batch) resumes in the same place.
+        Deliberately NOT called on every 'progress' tick — see callers."""
+        queue_data = [{
+            "vod_key": item.key,
+            "title": item.title,
+            "description": item.description,
+            "tags": item.tags,
+            "privacy": item.privacy,
+            "category_id": item.category_id,
+            "recording_date": item.recording_date,
+            "notify_subscribers": item.notify_subscribers,
+            "made_for_kids": item.made_for_kids,
+            "playlist": item.playlist,
+            "status": item.status,
+            "detail": item.detail,
+            "video_id": item.video_id,
+            "progress": item.progress,
+        } for item in self.queue_items]
+        try:
+            config.save_queue_state(
+                {"version": 1, "queue": queue_data, "metas": self.metas})
+        except OSError as exc:
+            self._log(f"Could not save queue state: {exc}")
+
+    def _restore_queue_state(self) -> None:
+        """Called once, right after the first scan of a session, so restored
+        queue entries can be matched against freshly scanned Vod objects."""
+        self._queue_state_restored = True
+        saved = config.load_queue_state()
+        items: list[QueueItem] = []
+        dropped = 0
+        for entry in saved.get("queue", []):
+            vod = self.vods.get(entry.get("vod_key", ""))
+            if vod is None:
+                dropped += 1
+                continue
+            status = entry.get("status", "queued")
+            progress = float(entry.get("progress", 0.0) or 0.0)
+            detail = entry.get("detail", "")
+            if status in ("uploading", "verifying"):
+                # No byte-level resume across a restart — it just restarts,
+                # same as an in-session network-drop retry already does.
+                status, progress, detail = "queued", 0.0, ""
+            items.append(QueueItem(
+                vod=vod,
+                title=entry.get("title") or vod.stream_title,
+                description=entry.get("description", ""),
+                tags=list(entry.get("tags") or []),
+                privacy=entry.get("privacy", self.cfg["privacy"]),
+                category_id=str(entry.get("category_id")
+                                or self.cfg.get("category_id", "20")),
+                recording_date=entry.get("recording_date"),
+                notify_subscribers=bool(entry.get("notify_subscribers", False)),
+                made_for_kids=bool(entry.get("made_for_kids", False)),
+                playlist=entry.get("playlist"),
+                status=status, detail=detail,
+                video_id=entry.get("video_id"), progress=progress,
+            ))
+        if dropped:
+            self._log(f"Dropped {dropped} queued upload(s) whose VOD folder "
+                      "no longer exists.")
+        if items:
+            self.queue_items = items
+            self._log(f"Restored {len(items)} queued upload(s) from the last session.")
+        metas_dropped = 0
+        for key, meta in saved.get("metas", {}).items():
+            if key in self.metas:
+                self.metas[key] = meta
+            else:
+                metas_dropped += 1
+        if metas_dropped:
+            self._log(f"Dropped saved metadata for {metas_dropped} video(s) "
+                      "no longer found by the scan.")
+        self._refresh_queue_tree()
 
     def _enqueue(self, keys: list[str]) -> None:
         added = skipped = 0
@@ -2034,6 +2462,7 @@ class App:
         self._refresh_video_tree()
         if added:
             self.notebook.select(1)
+            self._save_queue_state()
         self._log(f"Queued {added} video(s)" +
                   (f", skipped {skipped} (already uploaded/queued or unusable)." if skipped else "."))
 
@@ -2055,25 +2484,30 @@ class App:
         done = sum(1 for i in self.queue_items if i.status == "done")
         self.status_queue.configure(
             text=f"Queue: {pending} pending, {done} done, {len(self.queue_items)} total")
+        self._update_quota_panel(pending)
 
-    def _on_queue_tree_click(self, event):
-        if self.queue_tree.identify("region", event.x, event.y) == "cell" and \
-                self.queue_tree.identify_column(event.x) == "#1":
-            key = self.queue_tree.identify_row(event.y)
-            if key:
-                self.queue_checked.symmetric_difference_update({key})
-                self.queue_tree.set(
-                    key, "check",
-                    CHECKED if key in self.queue_checked else UNCHECKED)
-            return "break"
-        return None
+    def _update_quota_panel(self, pending: int) -> None:
+        used = limits.units_used_today(self.registry)
+        remaining = limits.uploads_remaining_today(self.registry)
+        text = f"YouTube quota today: {used:,} / {limits.QUOTA_DAILY_UNITS:,} units"
+        if pending:
+            eta = limits.eta_for_queue(pending, remaining)
+            text += (f" · ~{remaining} upload(s) left today · "
+                    f"queue of {pending} finishes {eta} (resets at Pacific midnight)")
+        self.quota_label.configure(text=text)
 
-    def _toggle_all_queue(self) -> None:
-        all_keys = {i.key for i in self.queue_items}
-        self.queue_checked = set() if self.queue_checked >= all_keys else all_keys
+    def _set_all_queue_checked(self, checked: bool) -> None:
+        # Mutate in place — see the comment on _set_all_yt_checked.
+        self.queue_checked.clear()
+        if checked:
+            self.queue_checked.update(i.key for i in self.queue_items)
         for key in self.queue_tree.get_children():
             self.queue_tree.set(
                 key, "check", CHECKED if key in self.queue_checked else UNCHECKED)
+
+    def _toggle_all_queue(self) -> None:
+        all_keys = {i.key for i in self.queue_items}
+        self._set_all_queue_checked(not (self.queue_checked >= all_keys))
 
     def _selected_queue_index(self) -> int | None:
         sel = self.queue_tree.selection()
@@ -2101,6 +2535,7 @@ class App:
         self.queue_items = [i for i in self.queue_items if i.key not in keys]
         self._refresh_queue_tree()
         self._refresh_video_tree()
+        self._save_queue_state()
 
     def move_queue_item(self, delta: int) -> None:
         idx = self._selected_queue_index()
@@ -2113,11 +2548,13 @@ class App:
         items[idx], items[new] = items[new], items[idx]
         self._refresh_queue_tree()
         self.queue_tree.selection_set(items[new].key)
+        self._save_queue_state()
 
     def clear_finished(self) -> None:
         self.queue_items = [i for i in self.queue_items
                             if i.status not in ("done", "cancelled")]
         self._refresh_queue_tree()
+        self._save_queue_state()
 
     # --------------------------------------------------------------- uploads --
     def start_uploads(self) -> None:
@@ -2201,6 +2638,7 @@ class App:
         if count:
             self._refresh_queue_tree()
             self._refresh_video_tree()
+            self._save_queue_state()
             self._log(f"Re-queued {count} failed upload(s). Press Start "
                       "(or let automation pick them up).")
         else:
@@ -2278,6 +2716,8 @@ class App:
         config.save_config(self.cfg)
         self.playlists = []
         self.playlist_ids = {}
+        self._yt_loaded_once = False
+        self._playlists_loaded_once = False
         self._log(f"Switching channel to account {account_id}…")
 
         def worker():
@@ -2405,8 +2845,12 @@ class App:
                 self._reset_progress_anim()
             if item and ev["status"] == "verifying":
                 self.current_label.configure(text=f"Verifying on YouTube: {item.title}")
+            if item and ev["status"] == "error":
+                notify.notify("Upload failed",
+                              f"{item.title}: {ev.get('detail', '')}"[:200])
             self._refresh_queue_tree()
             self._refresh_video_tree()
+            self._save_queue_state()
         elif etype == "verify_result":
             entry = self.registry.get(ev["key"])
             if entry is not None:
@@ -2478,6 +2922,10 @@ class App:
                 self.current_label.configure(
                     text={"finished": "Queue finished.",
                           "paused": "Paused."}.get(reason, "Idle."))
+                if reason == "finished":
+                    notify.notify("Upload queue finished",
+                                  "All queued videos have been processed.")
+            self._save_queue_state()
         elif etype == "auth_ok":
             self.credentials = ev["creds"]
             self.channel = ev.get("channel")
@@ -2504,6 +2952,7 @@ class App:
                 self.status_channel.configure(text=f"YouTube channel: {name}")
                 self._log(f"Active channel: {name}")
                 self.refresh_playlists()
+                self.load_yt_videos(quiet=True)
         elif etype == "yt_videos":
             items = ev.get("items")
             self.yt_videos = items or []
@@ -2728,14 +3177,22 @@ class App:
             self.worker.cancel_current.set()
             self.worker.pause_requested.set()
         self._save_editor()
+        self._save_queue_state()
         self.save_settings(silent=True)
         self.root.destroy()
 
 
+def _bundle_root() -> Path:
+    """Repo root when run from source, or the PyInstaller bundle root."""
+    return Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
+
+
 def _asset_path(name: str) -> Path:
-    base = Path(getattr(sys, "_MEIPASS",
-                        Path(__file__).resolve().parent.parent))
-    return base / "assets" / name
+    return _bundle_root() / "assets" / name
+
+
+def _changelog_path() -> Path:
+    return _bundle_root() / "CHANGELOG.md"
 
 
 def _set_app_icon(root: tk.Tk) -> None:

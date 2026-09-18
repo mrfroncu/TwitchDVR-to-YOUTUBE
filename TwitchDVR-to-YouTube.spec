@@ -19,15 +19,12 @@ from app.version import __version__  # noqa: E402
 # metadata of the google libs at runtime.
 datas = collect_data_files("googleapiclient.discovery_cache")
 datas += [(os.path.join(spec_dir, "assets"), "assets")]   # app icon etc.
-datas += [(os.path.join(spec_dir, "web", "static"), "web/static")]  # Studio UI
 datas += [(os.path.join(spec_dir, "CHANGELOG.md"), ".")]   # About → release notes
 for pkg in ("google-api-python-client", "google-auth", "google-auth-oauthlib",
             "google-auth-httplib2"):
     datas += copy_metadata(pkg)
 
-# Studio mode: pywebview picks its platform backend dynamically, and uvicorn
-# resolves loop/protocol classes from strings.
-hiddenimports = collect_submodules("webview") + collect_submodules("uvicorn")
+hiddenimports = []
 if sys.platform == "win32":
     hiddenimports += ["pywinstyles"]
 
