@@ -281,6 +281,8 @@ class App:
                                   selectforeground="#ffffff")
         for canvas in getattr(self, "_scroll_canvases", []):
             canvas.configure(bg=c["bg"])
+        if hasattr(self, "_templates_dialog"):
+            self._templates_dialog.configure(bg=c["bg"])
         self._set_titlebar_dark(theme != "light")
         self._update_title_count()
 
@@ -363,13 +365,15 @@ class App:
             pass
 
     # ------------------------------------------------------- checkbox columns --
-    def _bind_checkbox_column(self, tree: ttk.Treeview, checked: set[str]) -> None:
+    def _bind_checkbox_column(self, tree: ttk.Treeview, checked: set[str],
+                              on_change=None) -> None:
         """Shared click / click-and-drag / spacebar toggling for the fake
         checkbox column ("#1") used by the Videos, Queue and My YouTube
         trees. `checked` must be the actual set object the tree's rows read
         from — it's captured once here and mutated in place from then on,
         so callers must never do `self.xxx_checked = ...` (see the note on
-        _set_all_yt_checked)."""
+        _set_all_yt_checked). `on_change`, if given, runs after every paint
+        (e.g. to refresh a "N checked" summary)."""
         state = {"dragging": False, "target": False}
 
         def paint(key: str, want_checked: bool) -> None:
@@ -378,6 +382,8 @@ class App:
             else:
                 checked.discard(key)
             tree.set(key, "check", CHECKED if want_checked else UNCHECKED)
+            if on_change:
+                on_change()
 
         def on_press(event):
             if tree.identify("region", event.x, event.y) != "cell" or \
@@ -511,7 +517,9 @@ class App:
         self.video_tree.configure(yscrollcommand=vsb.set)
         self.video_tree.pack(side="top", fill="both", expand=False, padx=(8, 0))
         vsb.place(in_=self.video_tree, relx=1.0, rely=0, relheight=1.0, anchor="ne")
-        self._bind_checkbox_column(self.video_tree, self.video_checked)
+        self._bind_checkbox_column(
+            self.video_tree, self.video_checked,
+            on_change=lambda: self._update_video_summary(self._filtered_vods()))
         self.video_tree.bind("<<TreeviewSelect>>", self._on_video_select)
         self.video_tree.bind("<Double-1>", self._open_vod_folder)
         check_all_videos = self._check_all_shortcut(self._set_all_videos_checked)
@@ -1340,8 +1348,20 @@ class App:
         self.notebook.add(outer, text=" ⚙ Settings ")
         tab = self._make_scrollable(outer)
 
-        looks = ttk.LabelFrame(tab, text="Appearance")
-        looks.pack(fill="x", padx=10, pady=(10, 0))
+        def autosave(widget) -> None:
+            """Persist settings immediately on change instead of requiring a
+            separate 'Save settings' click — every field below does this."""
+            handler = lambda _e=None: self.save_settings(silent=True)  # noqa: E731
+            widget.bind("<FocusOut>", handler)
+            widget.bind("<Return>", handler)
+
+        def autoselect(combo: ttk.Combobox) -> None:
+            combo.bind("<<ComboboxSelected>>",
+                      lambda _e: self.save_settings(silent=True))
+
+        # ------------------------------------------------------------- appearance --
+        looks = ttk.LabelFrame(tab, text="🎨 Appearance")
+        looks.pack(fill="x", padx=10, pady=(10, 6))
         row = ttk.Frame(looks)
         row.pack(fill="x", padx=8, pady=8)
         ttk.Label(row, text="Theme:").pack(side="left")
@@ -1357,8 +1377,6 @@ class App:
                                  state="readonly", values=("modern", "classic"))
         style_box.pack(side="left", padx=6)
         style_box.bind("<<ComboboxSelected>>", self._on_ui_style_change)
-        ttk.Label(row, text="modern = larger type, roomier layout, animations",
-                  style="Muted.TLabel").pack(side="left", padx=8)
         ttk.Label(row, text="UI scale:").pack(side="left", padx=(16, 0))
         self.ui_scale_var = tk.StringVar(
             value=f"{round(float(self.cfg.get('ui_scale', 1.0)) * 100)}%")
@@ -1367,25 +1385,31 @@ class App:
                                  values=("75%", "100%", "125%", "150%"))
         scale_box.pack(side="left", padx=6)
         scale_box.bind("<<ComboboxSelected>>", self._on_ui_scale_change)
-        ttk.Label(row, text="for small/high-DPI screens where the UI doesn't fit",
-                  style="Muted.TLabel").pack(side="left", padx=8)
+        ttk.Label(looks,
+                  text="modern = larger type, roomier layout, animations · "
+                       "scale is for small/high-DPI screens where the UI doesn't fit",
+                  style="Muted.TLabel").pack(anchor="w", padx=8, pady=(0, 8))
 
-        acct = ttk.LabelFrame(tab, text="YouTube account")
-        acct.pack(fill="x", padx=10, pady=10)
+        # ---------------------------------------------------------- youtube account --
+        acct = ttk.LabelFrame(tab, text="🔑 YouTube account")
+        acct.pack(fill="x", padx=10, pady=6)
 
         row = ttk.Frame(acct)
         row.pack(fill="x", padx=8, pady=(8, 2))
         ttk.Label(row, text="OAuth client secret file:").pack(side="left")
         self.secret_var = tk.StringVar(value=self.cfg.get("client_secret_path", ""))
-        ttk.Entry(row, textvariable=self.secret_var).pack(
-            side="left", fill="x", expand=True, padx=6)
+        secret_entry = ttk.Entry(row, textvariable=self.secret_var)
+        secret_entry.pack(side="left", fill="x", expand=True, padx=6)
+        autosave(secret_entry)
         ttk.Button(row, text="Browse…", command=self._pick_secret).pack(side="left")
 
         row = ttk.Frame(acct)
         row.pack(fill="x", padx=8, pady=2)
         ttk.Label(row, text="Local redirect port (127.0.0.1):").pack(side="left")
         self.port_var = tk.StringVar(value=str(self.cfg.get("oauth_port", 8710)))
-        ttk.Entry(row, textvariable=self.port_var, width=8).pack(side="left", padx=6)
+        port_entry = ttk.Entry(row, textvariable=self.port_var, width=8)
+        port_entry.pack(side="left", padx=6)
+        autosave(port_entry)
         ttk.Label(row, text="(OAuth client type must be “Desktop app” — any port works)"
                   ).pack(side="left")
 
@@ -1415,47 +1439,32 @@ class App:
         ttk.Label(acct, text=hint, wraplength=900, style="Muted.TLabel"
                   ).pack(anchor="w", padx=8, pady=(0, 8))
 
-        up = ttk.LabelFrame(tab, text="Upload defaults")
-        up.pack(fill="x", padx=10, pady=(0, 10))
+        # ------------------------------------------------------------------ uploads --
+        up = ttk.LabelFrame(tab, text="⬆ Uploads")
+        up.pack(fill="x", padx=10, pady=6)
 
         row = ttk.Frame(up)
         row.pack(fill="x", padx=8, pady=(8, 2))
         ttk.Label(row, text="Default privacy:").pack(side="left")
         self.def_privacy_var = tk.StringVar(value=self.cfg["privacy"])
-        ttk.Combobox(row, textvariable=self.def_privacy_var, width=10, state="readonly",
-                     values=("private", "unlisted", "public")).pack(side="left", padx=6)
+        privacy_box = ttk.Combobox(row, textvariable=self.def_privacy_var, width=10,
+                                   state="readonly",
+                                   values=("private", "unlisted", "public"))
+        privacy_box.pack(side="left", padx=6)
+        autoselect(privacy_box)
         ttk.Label(row, text="Category:").pack(side="left", padx=(14, 0))
         inv = {v: k for k, v in config.CATEGORIES.items()}
         self.category_var = tk.StringVar(
             value=inv.get(str(self.cfg.get("category_id", "20")), "Gaming (20)"))
-        ttk.Combobox(row, textvariable=self.category_var, width=24, state="readonly",
-                     values=list(config.CATEGORIES)).pack(side="left", padx=6)
-
-        row = ttk.Frame(up)
-        row.pack(fill="x", padx=8, pady=2)
-        ttk.Label(row, text="Title template:").pack(side="left")
-        self.template_var = tk.StringVar(value=self.cfg["title_template"])
-        ttk.Entry(row, textvariable=self.template_var).pack(
-            side="left", fill="x", expand=True, padx=6)
-        ttk.Label(up, text="Placeholders: {title} {streamer} {login} {date} {game} {games}",
-                  style="Muted.TLabel").pack(anchor="w", padx=8)
-
-        row = ttk.Frame(up)
-        row.pack(fill="x", padx=8, pady=(6, 0))
-        ttk.Label(row, text="Description template:").pack(side="left")
-        ttk.Button(row, text="Reset to default", command=self._reset_desc_template
-                   ).pack(side="right")
-        self.desc_template_text = tk.Text(up, height=6, wrap="word", undo=True)
-        self.desc_template_text.pack(fill="x", padx=8, pady=(2, 0))
-        self.desc_template_text.insert(
-            "1.0", self.cfg.get("description_template")
-            or scanner.DEFAULT_DESCRIPTION_TEMPLATE)
-        ttk.Label(up, text="Placeholders: {title} {streamer} {login} {date} {duration} "
-                           "{game} {games} {chapters} (whole chapter block) {vod_id}. "
-                           "Lines whose placeholders are all empty are dropped "
-                           "automatically. Applies to newly scanned/reset videos.",
-                  style="Muted.TLabel", wraplength=980,
-                  justify="left").pack(anchor="w", padx=8, pady=(2, 0))
+        category_box = ttk.Combobox(row, textvariable=self.category_var, width=24,
+                                    state="readonly", values=list(config.CATEGORIES))
+        category_box.pack(side="left", padx=6)
+        autoselect(category_box)
+        ttk.Label(row, text="Extra tags:").pack(side="left", padx=(14, 0))
+        self.extra_tags_var = tk.StringVar(value=self.cfg.get("extra_tags", ""))
+        extra_tags_entry = ttk.Entry(row, textvariable=self.extra_tags_var)
+        extra_tags_entry.pack(side="left", fill="x", expand=True, padx=6)
+        autosave(extra_tags_entry)
 
         row = ttk.Frame(up)
         row.pack(fill="x", padx=8, pady=2)
@@ -1464,11 +1473,12 @@ class App:
         self.after_upload_var = tk.StringVar(
             value=inv_after.get(self.cfg.get("after_upload", "keep"),
                                 "Keep local files"))
-        ttk.Combobox(row, textvariable=self.after_upload_var, width=34,
-                     state="readonly",
-                     values=list(config.AFTER_UPLOAD_CHOICES)).pack(side="left", padx=6)
-        ttk.Label(row, text="(only after YouTube confirms the video exists; "
-                            "files go to the Recycle Bin)",
+        after_upload_box = ttk.Combobox(
+            row, textvariable=self.after_upload_var, width=34, state="readonly",
+            values=list(config.AFTER_UPLOAD_CHOICES))
+        after_upload_box.pack(side="left", padx=6)
+        autoselect(after_upload_box)
+        ttk.Label(row, text="(only after YouTube confirms the video exists)",
                   style="Muted.TLabel").pack(side="left")
 
         row = ttk.Frame(up)
@@ -1478,67 +1488,79 @@ class App:
         ttk.Checkbutton(
             row, text="⚠ If the Recycle Bin isn't available (e.g. some network "
                       "drives), delete permanently instead of doing nothing",
-            variable=self.recycle_fallback_var).pack(side="left")
+            variable=self.recycle_fallback_var,
+            command=lambda: self.save_settings(silent=True)).pack(side="left")
 
         row = ttk.Frame(up)
-        row.pack(fill="x", padx=8, pady=(6, 8))
+        row.pack(fill="x", padx=8, pady=(6, 2))
         self.notify_var = tk.BooleanVar(value=bool(self.cfg.get("notify_subscribers", False)))
         ttk.Checkbutton(row, text="Notify subscribers on upload",
-                        variable=self.notify_var).pack(side="left")
+                        variable=self.notify_var,
+                        command=lambda: self.save_settings(silent=True)).pack(side="left")
         self.kids_var = tk.BooleanVar(value=bool(self.cfg.get("made_for_kids", False)))
         ttk.Checkbutton(row, text="Mark as “made for kids”",
-                        variable=self.kids_var).pack(side="left", padx=14)
+                        variable=self.kids_var,
+                        command=lambda: self.save_settings(silent=True)
+                        ).pack(side="left", padx=14)
         ttk.Label(row, text="Max uploads per 24h:").pack(side="left", padx=(14, 0))
         self.daily_limit_var = tk.StringVar(
             value=str(self.cfg.get("daily_upload_limit", 0)))
-        ttk.Entry(row, textvariable=self.daily_limit_var, width=5).pack(side="left", padx=4)
-        ttk.Label(row, text="(0 = no limit; stops before YouTube errors)",
-                  style="Muted.TLabel").pack(side="left")
+        daily_limit_entry = ttk.Entry(row, textvariable=self.daily_limit_var, width=5)
+        daily_limit_entry.pack(side="left", padx=4)
+        autosave(daily_limit_entry)
+        ttk.Label(row, text="(0 = no limit)", style="Muted.TLabel").pack(side="left")
 
         row = ttk.Frame(up)
-        row.pack(fill="x", padx=8, pady=(0, 8))
-        ttk.Label(row, text="Extra tags (always added):").pack(side="left")
-        self.extra_tags_var = tk.StringVar(value=self.cfg.get("extra_tags", ""))
-        ttk.Entry(row, textvariable=self.extra_tags_var).pack(
-            side="left", fill="x", expand=True, padx=6)
+        row.pack(fill="x", padx=8, pady=(8, 8))
+        ttk.Button(row, text="✏ Edit title & description templates…",
+                   command=self._open_templates_dialog).pack(side="left")
+        ttk.Label(row, text="what generated titles/descriptions look like",
+                  style="Muted.TLabel").pack(side="left", padx=8)
 
-        beh = ttk.LabelFrame(tab, text="Behavior")
-        beh.pack(fill="x", padx=10, pady=(0, 10))
+        # ----------------------------------------------------------------- behavior --
+        beh = ttk.LabelFrame(tab, text="⚙ Behavior")
+        beh.pack(fill="x", padx=10, pady=6)
         row = ttk.Frame(beh)
         row.pack(fill="x", padx=8, pady=(8, 2))
         self.verify_var = tk.BooleanVar(
             value=bool(self.cfg.get("verify_uploads", True)))
         ttk.Checkbutton(row, text="Verify each upload on YouTube after it finishes",
-                        variable=self.verify_var).pack(side="left")
+                        variable=self.verify_var,
+                        command=lambda: self.save_settings(silent=True)).pack(side="left")
         self.update_check_var = tk.BooleanVar(
             value=bool(self.cfg.get("auto_update_check", True)))
         ttk.Checkbutton(row, text="Check for updates on startup",
-                        variable=self.update_check_var).pack(side="left", padx=14)
+                        variable=self.update_check_var,
+                        command=lambda: self.save_settings(silent=True)
+                        ).pack(side="left", padx=14)
         row = ttk.Frame(beh)
         row.pack(fill="x", padx=8, pady=(2, 8))
         ttk.Label(row, text="Upload speed limit (MB/s):").pack(side="left")
         self.speed_limit_var = tk.StringVar(
             value=str(self.cfg.get("upload_speed_limit", 0)))
-        ttk.Entry(row, textvariable=self.speed_limit_var, width=6
-                  ).pack(side="left", padx=4)
+        speed_entry = ttk.Entry(row, textvariable=self.speed_limit_var, width=6)
+        speed_entry.pack(side="left", padx=4)
+        autosave(speed_entry)
         ttk.Label(row, text="(0 = unlimited)", style="Muted.TLabel").pack(side="left")
         ttk.Label(row, text="Retry wait after YouTube upload limit (hours):"
                   ).pack(side="left", padx=(16, 0))
         self.cooldown_hours_var = tk.StringVar(
             value=str(self.cfg.get("cooldown_hours", 24.5)))
-        ttk.Entry(row, textvariable=self.cooldown_hours_var, width=6
-                  ).pack(side="left", padx=4)
+        cooldown_entry = ttk.Entry(row, textvariable=self.cooldown_hours_var, width=6)
+        cooldown_entry.pack(side="left", padx=4)
+        autosave(cooldown_entry)
 
+        # ------------------------------------------------------------------- footer --
         about = ttk.Frame(tab)
-        about.pack(fill="x", padx=10, pady=(2, 0))
-        ttk.Button(about, text="Save settings", command=self.save_settings
-                   ).pack(side="right")
+        about.pack(fill="x", padx=10, pady=(4, 0))
         ttk.Button(about, text="Check for updates",
                    command=lambda: threading.Thread(
                        target=self._update_check_bg, args=(True,),
                        daemon=True).start()).pack(side="left")
         ttk.Label(about, text=f"Version {__version__}", style="Muted.TLabel"
                   ).pack(side="left", padx=10)
+        ttk.Label(about, text="✓ Settings save automatically", style="Muted.TLabel"
+                  ).pack(side="right")
 
         notes = (
             "Quota note: every upload costs 1600 API units and Google's default daily quota "
@@ -1549,6 +1571,66 @@ class App:
             "API audit/verification to allow public uploads.")
         ttk.Label(tab, text=notes, wraplength=940, style="Muted.TLabel", justify="left"
                   ).pack(anchor="w", padx=10, pady=10)
+
+        self._build_templates_dialog()
+
+    def _build_templates_dialog(self) -> None:
+        """Built once (immediately hidden) so self.template_var and
+        self.desc_template_text stay alive for the whole session —
+        _apply_theme colors them and save_settings() always reads them,
+        whether or not this dialog is currently open."""
+        c = self.colors
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Upload templates")
+        dlg.configure(bg=c["bg"])
+        dlg.geometry("760x520")
+        dlg.transient(self.root)
+        dlg.protocol("WM_DELETE_WINDOW", dlg.withdraw)
+        self._templates_dialog = dlg
+
+        pad = ttk.Frame(dlg)
+        pad.pack(fill="both", expand=True, padx=16, pady=16)
+
+        ttk.Label(pad, text="Title template:").pack(anchor="w")
+        self.template_var = tk.StringVar(value=self.cfg["title_template"])
+        title_entry = ttk.Entry(pad, textvariable=self.template_var)
+        title_entry.pack(fill="x", pady=(2, 0))
+        title_entry.bind("<FocusOut>", lambda _e: self.save_settings(silent=True))
+        title_entry.bind("<Return>", lambda _e: self.save_settings(silent=True))
+        ttk.Label(pad, text="Placeholders: {title} {streamer} {login} {date} {game} {games}",
+                  style="Muted.TLabel").pack(anchor="w", pady=(2, 14))
+
+        row = ttk.Frame(pad)
+        row.pack(fill="x")
+        ttk.Label(row, text="Description template:").pack(side="left")
+        ttk.Button(row, text="Reset to default", command=self._reset_desc_template
+                   ).pack(side="right")
+        text_frame = ttk.Frame(pad)
+        text_frame.pack(fill="both", expand=True, pady=(4, 0))
+        self.desc_template_text = tk.Text(text_frame, wrap="word", undo=True)
+        dsb = ttk.Scrollbar(text_frame, orient="vertical",
+                            command=self.desc_template_text.yview)
+        self.desc_template_text.configure(yscrollcommand=dsb.set)
+        self.desc_template_text.pack(side="left", fill="both", expand=True)
+        dsb.pack(side="left", fill="y")
+        self.desc_template_text.insert(
+            "1.0", self.cfg.get("description_template")
+            or scanner.DEFAULT_DESCRIPTION_TEMPLATE)
+        self.desc_template_text.bind(
+            "<FocusOut>", lambda _e: self.save_settings(silent=True))
+        ttk.Label(pad, text="Placeholders: {title} {streamer} {login} {date} {duration} "
+                           "{game} {games} {chapters} (whole chapter block) {vod_id}. "
+                           "Lines whose placeholders are all empty are dropped "
+                           "automatically. Applies to newly scanned/reset videos.",
+                  style="Muted.TLabel", wraplength=720,
+                  justify="left").pack(anchor="w", pady=(8, 12))
+
+        ttk.Button(pad, text="Close", command=dlg.withdraw).pack(anchor="e")
+        dlg.withdraw()
+
+    def _open_templates_dialog(self) -> None:
+        self._templates_dialog.deiconify()
+        self._templates_dialog.lift()
 
     # ------------------------------------------------------------- about tab --
     def _build_about_tab(self) -> None:
@@ -1967,11 +2049,18 @@ class App:
         for vod in self.vods.values():
             cat = self._video_status_category(vod)
             counts[cat] = counts.get(cat, 0) + 1
-        self.video_summary_label.configure(
-            text=f"{len(filtered)} shown of {len(self.vods)} total — "
-                 f"{counts['ready']} ready, {counts['queued']} queued, "
-                 f"{counts['uploaded']} uploaded, {counts['verified']} verified, "
-                 f"{counts['failed']} failed, {counts['not_finalized']} not finalized")
+        shown_size = sum(vod.size_bytes for vod in filtered if vod.size_bytes)
+        text = (f"{len(filtered)} shown of {len(self.vods)} total "
+                f"({fmt_size(shown_size)}) — "
+                f"{counts['ready']} ready, {counts['queued']} queued, "
+                f"{counts['uploaded']} uploaded, {counts['verified']} verified, "
+                f"{counts['failed']} failed, {counts['not_finalized']} not finalized")
+        if self.video_checked:
+            checked_size = sum(self.vods[k].size_bytes for k in self.video_checked
+                               if k in self.vods and self.vods[k].size_bytes)
+            text += (f" · {len(self.video_checked)} checked "
+                    f"({fmt_size(checked_size)})")
+        self.video_summary_label.configure(text=text)
 
     def _refresh_video_tree(self) -> None:
         selected = set(self.video_tree.selection())
@@ -2006,6 +2095,7 @@ class App:
         for key in self.video_tree.get_children():
             self.video_tree.set(key, "check",
                                 CHECKED if key in self.video_checked else UNCHECKED)
+        self._update_video_summary(self._filtered_vods())
 
     def _toggle_all_videos(self) -> None:
         visible = {vod.key for vod in self._filtered_vods()}

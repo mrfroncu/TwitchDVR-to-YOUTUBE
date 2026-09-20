@@ -4,6 +4,26 @@ Release versions come from the `VERSION` file; each release's notes are the
 matching section of this file. Bump `VERSION` and add a section here to cut
 a new release.
 
+## 2.6.3 — 2026-09-20
+
+### 📊 Total size in the Videos summary
+- The summary line under the filters now also sums the Size column — for
+  what's currently shown, and for whatever you have checked.
+
+### ⚙ Settings tab reorganized, and fixed to actually save
+- **Every setting now saves the instant you change it** — no more separate
+  "Save settings" button to remember. This also fixes a real bug: the new
+  "delete permanently if the Recycle Bin fails" checkbox looked checked in
+  the UI but silently never took effect unless you happened to click Save
+  afterward, since it had no auto-save wired up. It (and everything else on
+  this tab) now applies immediately.
+- The title & description upload templates — previously the single biggest
+  block on the page — moved into their own "✏ Edit title & description
+  templates…" popup, so the main Settings page is no longer dominated by a
+  multi-line text box.
+- Sections got icons (🎨 Appearance, 🔑 YouTube account, ⬆ Uploads,
+  ⚙ Behavior) and tighter grouping to make the page easier to scan.
+
 ## 2.6.2 — 2026-09-18
 
 ### 🖱️ Right-click menu on the Videos tab
