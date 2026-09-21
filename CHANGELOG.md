@@ -4,6 +4,25 @@ Release versions come from the `VERSION` file; each release's notes are the
 matching section of this file. Bump `VERSION` and add a section here to cut
 a new release.
 
+## 2.6.5 — 2026-09-21
+
+### 🧭 Settings rebuilt as a sidebar, not a long scroll
+- Replaced the single scroll-through-everything page with a real
+  navigation structure: a category list on the left (Appearance, YouTube
+  account, Uploads, Behavior), one focused page on the right — closer to
+  how macOS/Windows system settings work, instead of stacked sections you
+  had to scroll past to find anything.
+- Version/update-check/quota notes stay as a small fixed footer under the
+  sidebar, visible no matter which category you're on.
+
+### 🎨 Icon/consistency pass on the other tabs
+- Section headers across Videos, Queue, Automation, My YouTube and
+  Playlists now use the same icon convention Settings got in 2.6.3, and
+  the plain "Log:" / "Automation activity:" labels got one too — these
+  tabs were already single-purpose (not the crammed, hard-to-navigate
+  problem Settings was), so this is a consistency pass, not a structural
+  rebuild like Settings got.
+
 ## 2.6.4 — 2026-09-20
 
 ### 🐛 The "Upload templates" window popping up unasked on launch
