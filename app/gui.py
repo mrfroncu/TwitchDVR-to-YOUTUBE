@@ -286,6 +286,7 @@ class App:
             canvas.configure(bg=c["bg"])
         if self._templates_dialog is not None:
             self._templates_dialog.configure(bg=c["bg"])
+        self._restyle_settings_nav()
         self._set_titlebar_dark(theme != "light")
         self._update_title_count()
 
@@ -532,7 +533,7 @@ class App:
         self.video_tree.bind("<Button-2>", self._show_video_context_menu)  # macOS
 
         # ---- bulk actions on checked rows (grouped: select | queue | set | maintain)
-        bulk = ttk.LabelFrame(tab, text="Bulk actions (apply to checked rows)")
+        bulk = ttk.LabelFrame(tab, text="🔧 Bulk actions (apply to checked rows)")
         bulk.pack(fill="x", padx=8, pady=(6, 0))
 
         def vsep(parent):
@@ -580,7 +581,7 @@ class App:
                    command=self.bulk_delete_local).pack(side="left", padx=(6, 0))
 
         # ---- metadata editor
-        editor = ttk.LabelFrame(tab, text="Video metadata (edit before queueing)")
+        editor = ttk.LabelFrame(tab, text="📝 Video metadata (edit before queueing)")
         editor.pack(fill="both", expand=True, padx=8, pady=8)
 
         row1 = ttk.Frame(editor)
@@ -716,7 +717,7 @@ class App:
         self.progressbar = ttk.Progressbar(prog, maximum=100.0)
         self.progressbar.pack(fill="x", pady=(2, 0))
 
-        ttk.Label(tab, text="Log:").pack(anchor="w", padx=8)
+        ttk.Label(tab, text="📜 Log:").pack(anchor="w", padx=8)
         log_frame = ttk.Frame(tab)
         log_frame.pack(fill="both", expand=True, padx=8, pady=(0, 8))
         self.log_text = tk.Text(log_frame, height=7, wrap="word", state="disabled")
@@ -730,7 +731,7 @@ class App:
         tab = ttk.Frame(self.notebook)
         self.notebook.add(tab, text=" 🤖 Automation ")
 
-        box = ttk.LabelFrame(tab, text="Background folder watching")
+        box = ttk.LabelFrame(tab, text="📁 Background folder watching")
         box.pack(fill="x", padx=10, pady=10)
 
         self.auto_enabled_var = tk.BooleanVar(value=bool(self.cfg.get("auto_scan", False)))
@@ -770,7 +771,7 @@ class App:
         ttk.Button(row, text="Run a scan cycle now", command=self._auto_cycle
                    ).pack(side="right")
 
-        ttk.Label(tab, text="Automation activity:").pack(anchor="w", padx=10)
+        ttk.Label(tab, text="📜 Automation activity:").pack(anchor="w", padx=10)
         frame = ttk.Frame(tab)
         frame.pack(fill="both", expand=True, padx=10, pady=(2, 10))
         self.auto_log_text = tk.Text(frame, height=10, wrap="word", state="disabled")
@@ -925,7 +926,7 @@ class App:
         self.yt_tree.bind("<Control-a>", check_all_yt)
         self.yt_tree.bind("<Command-a>", check_all_yt)   # macOS
 
-        act = ttk.LabelFrame(tab, text="Actions (apply to checked videos)")
+        act = ttk.LabelFrame(tab, text="🔧 Actions (apply to checked videos)")
         act.pack(fill="x", padx=8, pady=8)
         row = ttk.Frame(act)
         row.pack(fill="x", padx=6, pady=6)
@@ -954,7 +955,7 @@ class App:
                    command=self.yt_delete).pack(side="right")
 
         # ---- full metadata editor for the selected video
-        ed = ttk.LabelFrame(tab, text="Video editor (click a video above to load it)")
+        ed = ttk.LabelFrame(tab, text="📝 Video editor (click a video above to load it)")
         ed.pack(fill="both", expand=True, padx=8, pady=(0, 8))
         self.yt_edit_id: str | None = None
         self.yt_memberships: list[dict] = []
@@ -1348,10 +1349,30 @@ class App:
         self._scroll_canvases.append(canvas)
         return inner
 
+    def _show_settings_page(self, key: str) -> None:
+        for page in self._settings_pages.values():
+            page.pack_forget()
+        self._settings_pages[key].pack(fill="both", expand=True)
+        self._settings_active_page = key
+        self._restyle_settings_nav()
+
+    def _restyle_settings_nav(self) -> None:
+        """Highlight the active sidebar item. Split out from
+        _show_settings_page so _apply_theme can re-run it after a theme
+        change without also re-packing pages."""
+        c = self.colors
+        active = getattr(self, "_settings_active_page", None)
+        for key, btn in self._settings_nav_buttons.items():
+            selected = key == active
+            btn.configure(
+                bg=c["accent"] if selected else c["surface"],
+                fg="#ffffff" if selected else c["fg"],
+                activebackground=c["accent_hover"] if selected else c["hover"],
+                activeforeground="#ffffff" if selected else c["fg"])
+
     def _build_settings_tab(self) -> None:
         outer = ttk.Frame(self.notebook)
         self.notebook.add(outer, text=" ⚙ Settings ")
-        tab = self._make_scrollable(outer)
 
         def autosave(widget) -> None:
             """Persist settings immediately on change instead of requiring a
@@ -1364,9 +1385,37 @@ class App:
             combo.bind("<<ComboboxSelected>>",
                       lambda _e: self.save_settings(silent=True))
 
+        container = ttk.Frame(outer)
+        container.pack(fill="both", expand=True)
+
+        nav = ttk.Frame(container, width=196)
+        nav.pack(side="left", fill="y", padx=(10, 0), pady=10)
+        nav.pack_propagate(False)
+
+        content_host = ttk.Frame(container)
+        content_host.pack(side="left", fill="both", expand=True, padx=14, pady=10)
+
+        self._settings_pages: dict[str, ttk.Frame] = {}
+        self._settings_nav_buttons: dict[str, tk.Button] = {}
+        self._settings_active_page = None
+
+        def add_page(key: str, icon: str, label: str) -> ttk.Frame:
+            btn = tk.Button(
+                nav, text=f"{icon}  {label}", anchor="w", relief="flat", bd=0,
+                padx=14, pady=9, font=(self._font_family(), 10),
+                cursor="pointinghand" if sys.platform == "darwin" else "hand2",
+                command=lambda: self._show_settings_page(key))
+            btn.pack(fill="x", pady=1)
+            self._settings_nav_buttons[key] = btn
+            page = ttk.Frame(content_host)
+            self._settings_pages[key] = page
+            ttk.Label(page, text=f"{icon} {label}",
+                      font=(self._font_family(), 14, "bold")
+                      ).pack(anchor="w", pady=(0, 12))
+            return page
+
         # ------------------------------------------------------------- appearance --
-        looks = ttk.LabelFrame(tab, text="🎨 Appearance")
-        looks.pack(fill="x", padx=10, pady=(10, 6))
+        looks = add_page("appearance", "🎨", "Appearance")
         row = ttk.Frame(looks)
         row.pack(fill="x", padx=8, pady=8)
         ttk.Label(row, text="Theme:").pack(side="left")
@@ -1396,8 +1445,7 @@ class App:
                   style="Muted.TLabel").pack(anchor="w", padx=8, pady=(0, 8))
 
         # ---------------------------------------------------------- youtube account --
-        acct = ttk.LabelFrame(tab, text="🔑 YouTube account")
-        acct.pack(fill="x", padx=10, pady=6)
+        acct = add_page("account", "🔑", "YouTube account")
 
         row = ttk.Frame(acct)
         row.pack(fill="x", padx=8, pady=(8, 2))
@@ -1445,8 +1493,7 @@ class App:
                   ).pack(anchor="w", padx=8, pady=(0, 8))
 
         # ------------------------------------------------------------------ uploads --
-        up = ttk.LabelFrame(tab, text="⬆ Uploads")
-        up.pack(fill="x", padx=10, pady=6)
+        up = add_page("uploads", "⬆", "Uploads")
 
         row = ttk.Frame(up)
         row.pack(fill="x", padx=8, pady=(8, 2))
@@ -1523,8 +1570,7 @@ class App:
                   style="Muted.TLabel").pack(side="left", padx=8)
 
         # ----------------------------------------------------------------- behavior --
-        beh = ttk.LabelFrame(tab, text="⚙ Behavior")
-        beh.pack(fill="x", padx=10, pady=6)
+        beh = add_page("behavior", "⚙", "Behavior")
         row = ttk.Frame(beh)
         row.pack(fill="x", padx=8, pady=(8, 2))
         self.verify_var = tk.BooleanVar(
@@ -1555,9 +1601,24 @@ class App:
         cooldown_entry.pack(side="left", padx=4)
         autosave(cooldown_entry)
 
+        # self.template_var is a plain StringVar (safe to create/read/write
+        # any time, with or without a widget attached to it). The
+        # description template has no such headless container — Tk's Text
+        # widget doesn't support textvariable — so its value lives in
+        # self._desc_template_value until the dialog is actually built, at
+        # which point that Text widget becomes the live source instead.
+        self.template_var = tk.StringVar(value=self.cfg["title_template"])
+        self._desc_template_value = (self.cfg.get("description_template")
+                                     or scanner.DEFAULT_DESCRIPTION_TEMPLATE)
+        self._templates_dialog = None
+        self.desc_template_text = None
+
         # ------------------------------------------------------------------- footer --
-        about = ttk.Frame(tab)
-        about.pack(fill="x", padx=10, pady=(4, 0))
+        # Persistent strip below the sidebar+page area — not one of the
+        # paged categories, always visible regardless of which page is open.
+        ttk.Separator(outer, orient="horizontal").pack(fill="x", padx=10, pady=(4, 0))
+        about = ttk.Frame(outer)
+        about.pack(fill="x", padx=14, pady=(8, 2))
         ttk.Button(about, text="Check for updates",
                    command=lambda: threading.Thread(
                        target=self._update_check_bg, args=(True,),
@@ -1574,20 +1635,10 @@ class App:
             "Important: while your Google Cloud OAuth app is unverified / in testing mode, "
             "videos uploaded through the API are locked to PRIVATE by YouTube. Complete the "
             "API audit/verification to allow public uploads.")
-        ttk.Label(tab, text=notes, wraplength=940, style="Muted.TLabel", justify="left"
-                  ).pack(anchor="w", padx=10, pady=10)
+        ttk.Label(outer, text=notes, wraplength=1000, style="Muted.TLabel", justify="left"
+                  ).pack(anchor="w", padx=14, pady=(0, 10))
 
-        # self.template_var is a plain StringVar (safe to create/read/write
-        # any time, with or without a widget attached to it). The
-        # description template has no such headless container — Tk's Text
-        # widget doesn't support textvariable — so its value lives in
-        # self._desc_template_value until the dialog is actually built, at
-        # which point that Text widget becomes the live source instead.
-        self.template_var = tk.StringVar(value=self.cfg["title_template"])
-        self._desc_template_value = (self.cfg.get("description_template")
-                                     or scanner.DEFAULT_DESCRIPTION_TEMPLATE)
-        self._templates_dialog = None
-        self.desc_template_text = None
+        self._show_settings_page("appearance")
 
     def _build_templates_dialog(self) -> None:
         """Built lazily, on first use, NOT during startup: a Toplevel that
@@ -2411,7 +2462,7 @@ class App:
                   style="Muted.TLabel").pack(anchor="w", padx=10)
 
         rule = ttk.LabelFrame(
-            tab, text="Default playlist for uploads (per-video override on the Videos tab)")
+            tab, text="📃 Default playlist for uploads (per-video override on the Videos tab)")
         rule.pack(fill="x", padx=10, pady=(4, 10))
         self.pl_mode_var = tk.StringVar(value=self.cfg.get("playlist_mode", "none"))
         row = ttk.Frame(rule)
