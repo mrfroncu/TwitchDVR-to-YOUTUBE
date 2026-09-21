@@ -4,6 +4,25 @@ Release versions come from the `VERSION` file; each release's notes are the
 matching section of this file. Bump `VERSION` and add a section here to cut
 a new release.
 
+## 2.6.4 — 2026-09-20
+
+### 🐛 The "Upload templates" window popping up unasked on launch
+- The templates dialog added in 2.6.3 was built (hidden) at startup, and on
+  macOS a hidden `transient` window can get pulled visible when its parent
+  window is shown — so it appeared uninvited every time the app launched.
+  It's now only ever built the first time you actually click "✏ Edit title
+  & description templates…", so it simply can't exist yet at startup.
+
+### 🗑 Delete local files regardless of upload status
+- "Recycle local files" still requires a verified upload on YouTube first
+  (that's intentional — it's the safety net against deleting the only
+  copy). New separate "🗑 Delete local files (any status)" button and
+  right-click menu entry remove that requirement, for cleaning up
+  duplicates, test recordings, or anything else you just want gone —
+  still goes to the Recycle Bin (or permanently, only if you've enabled
+  that fallback), with its own explicit warning when a video hasn't been
+  confirmed uploaded yet.
+
 ## 2.6.3 — 2026-09-20
 
 ### 📊 Total size in the Videos summary
