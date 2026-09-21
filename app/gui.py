@@ -269,10 +269,13 @@ class App:
             tree.tag_configure("uploading", foreground=c["info"])
             tree.tag_configure("odd_row", background=c["odd"])
         for txt in (self.desc_text, self.log_text, self.auto_log_text,
-                    self.yt_desc_text, self.desc_template_text,
-                    self.changelog_text):
+                    self.yt_desc_text, self.changelog_text):
             txt.configure(bg=c["field_bg"], fg=c["fg"], insertbackground=c["fg"],
                           relief="flat", highlightthickness=0)
+        if self.desc_template_text is not None:
+            self.desc_template_text.configure(
+                bg=c["field_bg"], fg=c["fg"], insertbackground=c["fg"],
+                relief="flat", highlightthickness=0)
         self.changelog_text.tag_configure("h2", foreground=c["accent"])
         self.changelog_text.tag_configure("h3", foreground=c["info"])
         self.yt_pl_list.configure(bg=c["field_bg"], fg=c["fg"], relief="flat",
@@ -281,7 +284,7 @@ class App:
                                   selectforeground="#ffffff")
         for canvas in getattr(self, "_scroll_canvases", []):
             canvas.configure(bg=c["bg"])
-        if hasattr(self, "_templates_dialog"):
+        if self._templates_dialog is not None:
             self._templates_dialog.configure(bg=c["bg"])
         self._set_titlebar_dark(theme != "light")
         self._update_title_count()
@@ -573,6 +576,8 @@ class App:
         vsep(row2)
         ttk.Button(row2, text="🗑 Recycle local files",
                    command=self.bulk_recycle).pack(side="left")
+        ttk.Button(row2, text="🗑 Delete local files (any status)",
+                   command=self.bulk_delete_local).pack(side="left", padx=(6, 0))
 
         # ---- metadata editor
         editor = ttk.LabelFrame(tab, text="Video metadata (edit before queueing)")
@@ -1572,13 +1577,23 @@ class App:
         ttk.Label(tab, text=notes, wraplength=940, style="Muted.TLabel", justify="left"
                   ).pack(anchor="w", padx=10, pady=10)
 
-        self._build_templates_dialog()
+        # self.template_var is a plain StringVar (safe to create/read/write
+        # any time, with or without a widget attached to it). The
+        # description template has no such headless container — Tk's Text
+        # widget doesn't support textvariable — so its value lives in
+        # self._desc_template_value until the dialog is actually built, at
+        # which point that Text widget becomes the live source instead.
+        self.template_var = tk.StringVar(value=self.cfg["title_template"])
+        self._desc_template_value = (self.cfg.get("description_template")
+                                     or scanner.DEFAULT_DESCRIPTION_TEMPLATE)
+        self._templates_dialog = None
+        self.desc_template_text = None
 
     def _build_templates_dialog(self) -> None:
-        """Built once (immediately hidden) so self.template_var and
-        self.desc_template_text stay alive for the whole session —
-        _apply_theme colors them and save_settings() always reads them,
-        whether or not this dialog is currently open."""
+        """Built lazily, on first use, NOT during startup: a Toplevel that
+        exists (even withdrawn) while the main window is first being shown
+        can get pulled visible by macOS/Tk's transient-window handling
+        during the boot fade-in — this sidesteps that entirely."""
         c = self.colors
         dlg = tk.Toplevel(self.root)
         dlg.title("Upload templates")
@@ -1592,7 +1607,6 @@ class App:
         pad.pack(fill="both", expand=True, padx=16, pady=16)
 
         ttk.Label(pad, text="Title template:").pack(anchor="w")
-        self.template_var = tk.StringVar(value=self.cfg["title_template"])
         title_entry = ttk.Entry(pad, textvariable=self.template_var)
         title_entry.pack(fill="x", pady=(2, 0))
         title_entry.bind("<FocusOut>", lambda _e: self.save_settings(silent=True))
@@ -1613,9 +1627,10 @@ class App:
         self.desc_template_text.configure(yscrollcommand=dsb.set)
         self.desc_template_text.pack(side="left", fill="both", expand=True)
         dsb.pack(side="left", fill="y")
-        self.desc_template_text.insert(
-            "1.0", self.cfg.get("description_template")
-            or scanner.DEFAULT_DESCRIPTION_TEMPLATE)
+        self.desc_template_text.insert("1.0", self._desc_template_value)
+        self.desc_template_text.configure(
+            bg=c["field_bg"], fg=c["fg"], insertbackground=c["fg"],
+            relief="flat", highlightthickness=0)
         self.desc_template_text.bind(
             "<FocusOut>", lambda _e: self.save_settings(silent=True))
         ttk.Label(pad, text="Placeholders: {title} {streamer} {login} {date} {duration} "
@@ -1626,9 +1641,10 @@ class App:
                   justify="left").pack(anchor="w", pady=(8, 12))
 
         ttk.Button(pad, text="Close", command=dlg.withdraw).pack(anchor="e")
-        dlg.withdraw()
 
     def _open_templates_dialog(self) -> None:
+        if self._templates_dialog is None:
+            self._build_templates_dialog()
         self._templates_dialog.deiconify()
         self._templates_dialog.lift()
 
@@ -1848,8 +1864,8 @@ class App:
 
     def _generate_meta(self, vod: Vod) -> dict:
         desc_tpl = (self.desc_template_text.get("1.0", "end-1c")
-                    if hasattr(self, "desc_template_text")
-                    else self.cfg.get("description_template"))
+                    if self.desc_template_text is not None
+                    else self._desc_template_value)
         tags = scanner.build_tags(vod)
         extra_raw = (self.extra_tags_var.get() if hasattr(self, "extra_tags_var")
                      else self.cfg.get("extra_tags", ""))
@@ -2218,6 +2234,60 @@ class App:
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def bulk_delete_local(self, keys: list[str] | None = None) -> None:
+        """Delete checked videos' local folders directly, with NO
+        verified-upload requirement (unlike Recycle above) — for cleaning
+        up duplicates, test recordings, or anything else regardless of
+        upload status. Still goes to the Recycle Bin when possible; only
+        permanent if the fallback setting is on and the Bin is unavailable."""
+        source_keys = keys if keys is not None else self._checked_video_keys()
+        candidates = [k for k in source_keys
+                     if k in self.vods
+                     and not self.registry.get(k, {}).get("local_deleted")]
+        if not candidates:
+            messagebox.showinfo(
+                "Delete local files",
+                "No checked rows have a local folder to delete "
+                "(or it was already removed).")
+            return
+        unverified = sum(
+            1 for k in candidates
+            if not self.registry.get(k, {}).get("verified"))
+        warn = ""
+        if unverified:
+            warn = (f"\n\n⚠ {unverified} of these {len(candidates)} video(s) "
+                    "have NOT been confirmed uploaded and verified on "
+                    "YouTube — deleting them now risks losing the only copy.")
+        if self.cfg.get("recycle_fallback_delete", False):
+            warn += ("\n\n⚠ Permanent-delete fallback is enabled in Settings "
+                     "— if the Recycle Bin isn't available for a file, it "
+                     "will be DELETED PERMANENTLY instead.")
+        if not messagebox.askyesno(
+                "Delete local files",
+                f"Delete {len(candidates)} whole VOD folder(s) — video, "
+                "chapters, metadata, everything?" + warn, icon="warning"):
+            return
+        if getattr(self, "_recycling", False):
+            self._log("A recycle/delete operation is already running.")
+            return
+        self._recycling = True
+        self.scan_status_label.configure(
+            text=f"🗑 Deleting 0/{len(candidates)}…")
+        total = len(candidates)
+
+        def worker():
+            emit = lambda text: self.events.put({"type": "log", "text": text})  # noqa: E731
+            done = 0
+            for i, key in enumerate(candidates, start=1):
+                self.events.put({"type": "op_progress",
+                                 "text": f"🗑 Deleting {i}/{total}: {key[:48]}"})
+                if self._recycle_vod(key, "trash_folder", log=emit):
+                    done += 1
+            self.events.put({"type": "recycle_done", "done": done,
+                             "total": total})
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def bulk_reset_state(self, keys: list[str] | None = None) -> None:
         """Forget the upload record of checked rows so they can be re-uploaded."""
         keys = keys if keys is not None else self._checked_video_keys()
@@ -2560,6 +2630,10 @@ class App:
             if entry.get("verified") and not entry.get("local_deleted"):
                 menu.add_command(label="🗑 Recycle local files",
                                  command=lambda: self.bulk_recycle(keys))
+        if not (entry and entry.get("local_deleted")):
+            menu.add_separator()
+            menu.add_command(label="🗑 Delete local files (any status)",
+                             command=lambda: self.bulk_delete_local(keys))
         try:
             menu.tk_popup(event.x_root, event.y_root)
         finally:
@@ -3406,8 +3480,10 @@ class App:
 
     # -------------------------------------------------------------- settings --
     def _reset_desc_template(self) -> None:
-        self.desc_template_text.delete("1.0", "end")
-        self.desc_template_text.insert("1.0", scanner.DEFAULT_DESCRIPTION_TEMPLATE)
+        self._desc_template_value = scanner.DEFAULT_DESCRIPTION_TEMPLATE
+        if self.desc_template_text is not None:
+            self.desc_template_text.delete("1.0", "end")
+            self.desc_template_text.insert("1.0", scanner.DEFAULT_DESCRIPTION_TEMPLATE)
         self.cfg["description_template"] = ""
         config.save_config(self.cfg)
         self._log("Description template reset to the default format.")
@@ -3429,7 +3505,10 @@ class App:
         self.cfg["privacy"] = self.def_privacy_var.get()
         self.cfg["category_id"] = config.CATEGORIES.get(self.category_var.get(), "20")
         self.cfg["title_template"] = self.template_var.get() or config.DEFAULTS["title_template"]
-        desc_tpl = self.desc_template_text.get("1.0", "end-1c").strip("\n")
+        desc_tpl = (self.desc_template_text.get("1.0", "end-1c").strip("\n")
+                   if self.desc_template_text is not None
+                   else self._desc_template_value)
+        self._desc_template_value = desc_tpl
         self.cfg["description_template"] = (
             "" if desc_tpl == scanner.DEFAULT_DESCRIPTION_TEMPLATE else desc_tpl)
         self.cfg["notify_subscribers"] = bool(self.notify_var.get())
