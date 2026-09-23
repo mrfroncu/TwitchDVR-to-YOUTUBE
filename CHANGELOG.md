@@ -4,6 +4,16 @@ Release versions come from the `VERSION` file; each release's notes are the
 matching section of this file. Bump `VERSION` and add a section here to cut
 a new release.
 
+## 2.6.6 — 2026-09-23
+
+### 🐛 Settings sidebar unreadable on macOS
+- The new sidebar categories from 2.6.5 used native buttons, and macOS
+  mostly ignores a native button's background color — so every unselected
+  category showed as a pale system-gray tile with barely-visible text,
+  no matter which theme was active. Switched the sidebar items to plain
+  labels (which always honor the app's colors on every platform) and
+  added a proper hover highlight now that they're not native buttons.
+
 ## 2.6.5 — 2026-09-21
 
 ### 🧭 Settings rebuilt as a sidebar, not a long scroll
