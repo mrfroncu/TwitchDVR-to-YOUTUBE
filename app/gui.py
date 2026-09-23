@@ -1359,16 +1359,26 @@ class App:
     def _restyle_settings_nav(self) -> None:
         """Highlight the active sidebar item. Split out from
         _show_settings_page so _apply_theme can re-run it after a theme
-        change without also re-packing pages."""
+        change without also re-packing pages.
+
+        These nav items are plain tk.Label widgets, not tk.Button — on
+        macOS, a native (Aqua) tk.Button largely ignores its `bg` option,
+        always rendering with the system's light button chrome regardless
+        of theme, which is exactly the "unreadable pale tiles in dark mode"
+        bug this replaced. Label backgrounds are always honored."""
         c = self.colors
         active = getattr(self, "_settings_active_page", None)
-        for key, btn in self._settings_nav_buttons.items():
+        for key, lbl in self._settings_nav_buttons.items():
             selected = key == active
-            btn.configure(
-                bg=c["accent"] if selected else c["surface"],
-                fg="#ffffff" if selected else c["fg"],
-                activebackground=c["accent_hover"] if selected else c["hover"],
-                activeforeground="#ffffff" if selected else c["fg"])
+            lbl._selected = selected  # noqa: SLF001 (read back by the hover handlers)
+            lbl.configure(bg=c["accent"] if selected else c["surface"],
+                         fg="#ffffff" if selected else c["fg"])
+
+    def _on_settings_nav_hover(self, key: str, entering: bool) -> None:
+        lbl = self._settings_nav_buttons[key]
+        if getattr(lbl, "_selected", False):
+            return   # the active page keeps its accent color regardless
+        lbl.configure(bg=self.colors["hover"] if entering else self.colors["surface"])
 
     def _build_settings_tab(self) -> None:
         outer = ttk.Frame(self.notebook)
@@ -1396,16 +1406,21 @@ class App:
         content_host.pack(side="left", fill="both", expand=True, padx=14, pady=10)
 
         self._settings_pages: dict[str, ttk.Frame] = {}
-        self._settings_nav_buttons: dict[str, tk.Button] = {}
+        self._settings_nav_buttons: dict[str, tk.Label] = {}
         self._settings_active_page = None
 
         def add_page(key: str, icon: str, label: str) -> ttk.Frame:
-            btn = tk.Button(
-                nav, text=f"{icon}  {label}", anchor="w", relief="flat", bd=0,
+            # A tk.Label, not tk.Button: on macOS a native tk.Button mostly
+            # ignores `bg`, always drawing the system's light button chrome
+            # no matter the theme — Labels always honor bg/fg.
+            btn = tk.Label(
+                nav, text=f"{icon}  {label}", anchor="w",
                 padx=14, pady=9, font=(self._font_family(), 10),
-                cursor="pointinghand" if sys.platform == "darwin" else "hand2",
-                command=lambda: self._show_settings_page(key))
+                cursor="pointinghand" if sys.platform == "darwin" else "hand2")
             btn.pack(fill="x", pady=1)
+            btn.bind("<Button-1>", lambda _e, k=key: self._show_settings_page(k))
+            btn.bind("<Enter>", lambda _e, k=key: self._on_settings_nav_hover(k, True))
+            btn.bind("<Leave>", lambda _e, k=key: self._on_settings_nav_hover(k, False))
             self._settings_nav_buttons[key] = btn
             page = ttk.Frame(content_host)
             self._settings_pages[key] = page
