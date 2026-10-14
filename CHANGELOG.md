@@ -4,6 +4,28 @@ Release versions come from the `VERSION` file; each release's notes are the
 matching section of this file. Bump `VERSION` and add a section here to cut
 a new release.
 
+## 2.6.7 — 2026-10-14
+
+### 🐛 Web/Docker: the queue survives a container restart
+- The web version kept the upload queue only in memory, so restarting the
+  container wiped it and nothing resumed. It now saves the queue and your
+  edited metadata to `/config/queue_state.json` (the same file the desktop
+  app uses) on every change and restores it after the first scan.
+- If uploads were running when the container stopped, they resume
+  automatically once the YouTube session is restored. The video that was
+  in flight starts over. A paused queue stays paused. An active upload
+  cooldown is still respected.
+
+### 🧾 New History tab: see whether delete-after-upload worked
+- Each finished upload now records what happened to its local files:
+  deleted, kept (and why, e.g. the upload couldn't be verified), delete
+  failed (with the error), or already gone.
+- The new **History** tab lists every upload by VOD folder name with its
+  YouTube link, that outcome, and a live on-disk check. A **Needs
+  attention** filter shows uploads whose files should be gone but aren't.
+- Queue items now show their VOD folder name and the delete result, so they
+  match up with the Videos list.
+
 ## 2.6.6 — 2026-09-23
 
 ### 🐛 Settings sidebar unreadable on macOS

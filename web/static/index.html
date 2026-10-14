@@ -21,6 +21,7 @@
   <nav>
     <button class="nav-btn active" data-view="videos">🎬 <span>Videos</span></button>
     <button class="nav-btn" data-view="queue">📤 <span>Queue</span> <em id="queue-badge" class="badge hidden"></em></button>
+    <button class="nav-btn" data-view="history">🧾 <span>History</span></button>
     <button class="nav-btn" data-view="automation">🤖 <span>Automation</span></button>
     <button class="nav-btn" data-view="playlists">📃 <span>Playlists</span></button>
     <button class="nav-btn" data-view="myyt">📺 <span>My YouTube</span></button>
@@ -105,6 +106,39 @@
     <div class="card">
       <div id="queue-list" class="queue-list"></div>
     </div>
+  </section>
+
+  <!-- =========================================================== HISTORY -->
+  <section id="view-history" class="view hidden">
+    <header class="view-head">
+      <h1>Upload history</h1>
+      <div class="toolbar">
+        <input id="hist-search" class="input" placeholder="Search folder or title"
+               spellcheck="false" oninput="renderHistory()">
+        <select id="hist-filter" class="input sm" onchange="renderHistory()">
+          <option value="all">All uploads</option>
+          <option value="problems">Needs attention</option>
+          <option value="gone">Deleted ✓</option>
+          <option value="present">Still on disk</option>
+        </select>
+        <button class="btn btn-accent" onclick="loadHistory()">⟳ Re-check disk</button>
+      </div>
+    </header>
+    <div id="hist-summary" class="hist-summary"></div>
+    <div class="card">
+      <div class="table-wrap">
+        <table id="history-table">
+          <thead><tr>
+            <th>Uploaded</th><th>VOD folder</th><th>YouTube title</th>
+            <th>Video</th><th>After upload</th><th>On disk now</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+    <p class="muted">Every finished upload, matched by VOD folder name. “After
+      upload” is what the app did with the local files; “On disk now” is checked
+      live each time you open this tab or press Re-check.</p>
   </section>
 
   <!-- ======================================================== AUTOMATION -->

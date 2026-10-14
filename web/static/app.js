@@ -77,6 +77,7 @@ document.querySelectorAll(".nav-btn").forEach(btn => {
     void view.offsetWidth;          // restart the entry animation
     view.classList.add("anim");
     if (btn.dataset.view === "about") loadChangelog();
+    if (btn.dataset.view === "history") loadHistory();
   });
 });
 
@@ -352,7 +353,9 @@ function renderQueue() {
       <div>${idx + 1}</div>
       <div style="min-width:0">
         <div class="q-title">${esc(q.title)}</div>
-        <div class="q-detail">${fmtSize(q.size)} · ${esc(q.privacy)} · ${esc(q.detail || "")}</div>
+        <div class="q-detail">📁 ${esc(q.key)} · ${fmtSize(q.size)} · ${esc(q.privacy)} · ${esc(q.detail || "")}</div>
+        ${q.local ? `<div class="q-detail ${LOCAL_LABELS[q.local.state]?.[1] || ""}"
+          title="${esc(q.local.path || "")}">${localLabel(q.local)}</div>` : ""}
       </div>
       <span class="q-status ${q.status}">${q.status}${q.status === "uploading" ? " " + q.progress + "%" : ""}</span>
       <div class="q-arrows">
@@ -375,6 +378,97 @@ function renderQueue() {
   const badge = el("queue-badge");
   badge.textContent = pending;
   badge.classList.toggle("hidden", pending === 0);
+}
+
+/* ----------------------------------------------------------- history */
+const LOCAL_LABELS = {                // registry local.state -> [label, css]
+  deleted: ["🗑 Local files deleted", "st-ok"],
+  kept: ["📁 Kept", ""],
+  failed: ["❌ Delete failed", "st-err"],
+  missing: ["Already gone", ""],
+};
+const CHECK_LABELS = {                // server-side check -> [label, css]
+  gone: ["🗑 Deleted ✓", "st-ok"],
+  still_on_disk: ["⚠ Deleted, but still on disk", "st-err"],
+  failed: ["❌ Delete failed", "st-err"],
+  kept: ["📁 Kept", ""],
+  missing: ["Already gone", ""],
+  legacy: ["— not tracked", "muted"],
+};
+function fmtTime(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return isNaN(d) ? iso : d.toLocaleString();
+}
+function localLabel(local) {
+  const [label] = LOCAL_LABELS[local.state] || [local.state];
+  return `${label} · ${esc(local.detail || "")} · ${fmtTime(local.at)}`;
+}
+let histRows = [], historyAfter = "keep";
+async function loadHistory() {
+  el("hist-summary").innerHTML = `<span class="chip chip-muted">checking disk…</span>`;
+  try {
+    const data = await api("/api/history", null, "GET");
+    histRows = data.history || [];
+    historyAfter = data.after_upload || "keep";
+    renderHistory();
+  } catch (e) { el("hist-summary").innerHTML = ""; }
+}
+function histPresent(r) {
+  // whatever delete-after-upload targets is still there
+  return historyAfter === "trash_video" ? r.video_exists : r.folder_exists;
+}
+function histProblem(r) {
+  if (r.check === "still_on_disk" || r.check === "failed") return true;
+  // deletion is on, upload went through, but the files never went away
+  return historyAfter !== "keep" && r.verified && histPresent(r)
+    && (r.check === "kept" || r.check === "legacy");
+}
+function renderHistory() {
+  const q = el("hist-search").value.trim().toLowerCase();
+  const filter = el("hist-filter").value;
+  const gone = histRows.filter(r => r.check === "gone").length;
+  const problems = histRows.filter(histProblem).length;
+  const present = histRows.filter(r => r.folder_exists).length;
+  el("hist-summary").innerHTML = `
+    <span class="chip chip-muted">${histRows.length} uploaded</span>
+    <span class="chip">🗑 ${gone} deleted &amp; confirmed gone</span>
+    <span class="chip chip-muted">📁 ${present} folder(s) still on disk</span>
+    <span class="chip ${problems ? "chip-warn" : "chip-muted"}">⚠ ${problems} need attention</span>
+    <span class="chip chip-muted">after upload: ${esc({ keep: "keep files",
+      trash_video: "delete video file", trash_folder: "delete whole folder" }[historyAfter]
+      || historyAfter)}</span>`;
+  const rows = histRows.filter(r => {
+    if (q && !(r.key.toLowerCase().includes(q) || r.title.toLowerCase().includes(q))) return false;
+    if (filter === "problems") return histProblem(r);
+    if (filter === "gone") return r.check === "gone";
+    if (filter === "present") return r.folder_exists;
+    return true;
+  });
+  const tbody = el("history-table").querySelector("tbody");
+  tbody.innerHTML = rows.length ? ""
+    : `<tr><td colspan="6" class="empty">Nothing here.</td></tr>`;
+  for (const r of rows) {
+    const [label, cls] = CHECK_LABELS[r.check] || [r.check, ""];
+    const local = r.local || {};
+    const tr = document.createElement("tr");
+    if (histProblem(r)) tr.classList.add("hist-problem");
+    tr.innerHTML = `
+      <td>${fmtTime(r.uploaded_at)}</td>
+      <td class="mono" title="${esc(r.folder)}">${esc(r.key)}</td>
+      <td>${esc(r.title)}</td>
+      <td>${r.video_id ? `<a href="https://youtu.be/${esc(r.video_id)}" target="_blank"
+        rel="noopener">${esc(r.video_id)}</a>` : "—"}
+        ${r.failed ? `<div class="st-err">failed on YouTube</div>`
+          : r.verified ? `<div class="st-ok">verified</div>` : `<div class="muted">unverified</div>`}</td>
+      <td class="${cls}" title="${esc(local.path || "")}">${label}
+        ${local.detail ? `<div class="muted">${esc(local.detail)}</div>` : ""}
+        ${local.at ? `<div class="muted">${fmtTime(local.at)}</div>` : ""}</td>
+      <td class="${histPresent(r) && historyAfter !== "keep" ? "st-err" : ""}">${
+        r.folder_exists ? "📁 folder present" + (r.video_exists ? " · video file present" : "")
+                        : "✓ folder gone"}</td>`;
+    tbody.appendChild(tr);
+  }
 }
 
 /* -------------------------------------------------------- automation */

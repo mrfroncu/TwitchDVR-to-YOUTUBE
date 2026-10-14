@@ -199,6 +199,15 @@ input[type="radio"] { accent-color: var(--accent); }
 .q-status.done { background: #16321d; color: var(--ok); }
 .q-status.error { background: #391f1f; color: var(--err); }
 .q-arrows { display: flex; gap: 4px; }
+.q-detail.st-ok { color: var(--ok); } .q-detail.st-err { color: var(--err); }
+
+/* ------------------------------------------------------------- history */
+.hist-summary { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+#history-table td { vertical-align: top; }
+#history-table td .muted { font-size: 11.5px; }
+#history-table tbody tr { cursor: default; }
+tr.hist-problem { background: rgba(240, 90, 90, .07); }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
 .empty { padding: 40px; text-align: center; color: var(--muted); }
 
 /* -------------------------------------------------------------- editor */

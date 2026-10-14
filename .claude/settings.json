@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -v -E '\\\\.\\(png|ico|icns\\)$')",
+      "Bash(python3 -c \"import fastapi, googleapiclient, google_auth_oauthlib; print\\('deps ok'\\)\")",
+      "Bash(node --check web/static/app.js)",
+      "Bash(python3 -W ignore smoke.py \"/Users/mfronc/Documents/#VisualStudio-Github/TwitchDVR-to-YOUTUBE\")"
+    ]
+  }
+}

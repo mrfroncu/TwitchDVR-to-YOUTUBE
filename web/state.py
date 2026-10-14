@@ -58,6 +58,11 @@ class Controller:
         self.op_state: dict = {"active": False, "label": "", "done": 0,
                                "total": 0, "result": ""}
         self.lock = threading.RLock()
+        # Queue persistence: restored once, after the first successful scan
+        # (saved entries need freshly scanned Vod objects to attach to).
+        self._queue_restored = False
+        self._uploads_running = False   # persisted so a restart can resume
+        self._resume_pending = False
 
         self.update_info: dict | None = None
         threading.Thread(target=self._restore_session, daemon=True).start()
@@ -388,6 +393,8 @@ class Controller:
             for vod in vods:
                 if vod.key not in self.metas:
                     self.metas[vod.key] = self._generate_meta(vod)
+            if not self._queue_restored:
+                self._restore_queue_state()
         self.scan_state.update(active=False, found=len(vods))
         self.log(f"Scanned {folder}: found {len(vods)} VOD folder(s)."
                  if vods else f"Scanned {folder}: no VOD folders found.")
@@ -513,6 +520,112 @@ class Controller:
         return None
 
     # ------------------------------------------------------------------ queue
+    def _save_queue_state(self) -> None:
+        """Persist the queue + edited metadata (same file/format as the
+        classic desktop GUI) so a container restart resumes where it was.
+        Deliberately NOT called on 'progress' ticks."""
+        with self.lock:
+            queue_data = [{
+                "vod_key": item.key,
+                "title": item.title,
+                "description": item.description,
+                "tags": item.tags,
+                "privacy": item.privacy,
+                "category_id": item.category_id,
+                "recording_date": item.recording_date,
+                "notify_subscribers": item.notify_subscribers,
+                "made_for_kids": item.made_for_kids,
+                "playlist": item.playlist,
+                "status": item.status,
+                "detail": item.detail,
+                "video_id": item.video_id,
+                "progress": item.progress,
+            } for item in self.queue_items]
+            try:
+                config.save_queue_state({
+                    "version": 1, "queue": queue_data, "metas": self.metas,
+                    "running": self._uploads_running})
+            except OSError as exc:
+                self.log(f"Could not save queue state: {exc}")
+
+    def _restore_queue_state(self) -> None:
+        """Called (under self.lock) once, right after the first scan."""
+        self._queue_restored = True
+        saved = config.load_queue_state()
+        items: list[QueueItem] = []
+        dropped = 0
+        for entry in saved.get("queue", []):
+            vod = self.vods.get(entry.get("vod_key", ""))
+            status = entry.get("status", "queued")
+            if vod is None:
+                # finished items whose folder was deleted after upload are
+                # expected to be gone — only pending ones are worth a warning
+                if status not in ("done", "cancelled"):
+                    dropped += 1
+                continue
+            progress = float(entry.get("progress", 0.0) or 0.0)
+            detail = entry.get("detail", "")
+            if status in ("uploading", "verifying"):
+                # No byte-level resume across a restart — it starts over,
+                # same as an in-session retry after a network drop.
+                status, progress = "queued", 0.0
+                detail = "interrupted by a restart — will start over"
+            items.append(QueueItem(
+                vod=vod,
+                title=entry.get("title") or vod.stream_title,
+                description=entry.get("description", ""),
+                tags=list(entry.get("tags") or []),
+                privacy=entry.get("privacy", self.cfg["privacy"]),
+                category_id=str(entry.get("category_id")
+                                or self.cfg.get("category_id", "20")),
+                recording_date=entry.get("recording_date"),
+                notify_subscribers=bool(entry.get("notify_subscribers", False)),
+                made_for_kids=bool(entry.get("made_for_kids", False)),
+                playlist=entry.get("playlist"),
+                status=status, detail=detail,
+                video_id=entry.get("video_id"), progress=progress,
+            ))
+        for key, meta in saved.get("metas", {}).items():
+            if key in self.metas:
+                self.metas[key] = meta
+        if dropped:
+            self.log(f"Dropped {dropped} queued upload(s) whose VOD folder "
+                     "no longer exists.")
+        if not items:
+            return
+        self.queue_items = items
+        pending = sum(1 for i in items if i.status == "queued")
+        self.log(f"Restored {len(items)} queue item(s) from before the restart "
+                 f"({pending} still to upload).")
+        was_running = bool(saved.get("running"))
+        auto = self.cfg.get("auto_scan") and self.cfg.get("auto_start", True)
+        if pending and (was_running or auto):
+            self._resume_pending = True
+            if self.credentials is None:
+                self.log("Uploads will resume as soon as the YouTube session "
+                         "is restored.")
+
+    def _resume_tick(self) -> None:
+        """Restart the restored queue once sign-in has been restored."""
+        if not self._resume_pending or self.credentials is None:
+            return
+        self._resume_pending = False
+        if self.worker and self.worker.is_alive():
+            return
+        if not any(i.status == "queued" for i in self.queue_items):
+            return
+        cooldown = limits.get_cooldown(self.cfg)
+        if cooldown is not None:
+            # _cooldown_tick starts the queue when the cooldown ends
+            self.log("Restored queue is waiting for the upload cooldown "
+                     f"(until {limits.fmt_local(cooldown)}).")
+            return
+        self.log("Resuming the upload queue that was running before the restart.")
+        try:
+            self.start_uploads()
+        except RuntimeError as exc:
+            self.log(f"Could not resume uploads: {exc}")
+
     def enqueue(self, keys: list[str]) -> tuple[int, int]:
         added = skipped = 0
         with self.lock:
@@ -541,6 +654,8 @@ class Controller:
                     playlist=self._resolve_playlist_spec(key),
                 ))
                 added += 1
+        if added:
+            self._save_queue_state()
         if added or skipped:
             self.log(f"Queued {added} video(s)"
                      + (f", skipped {skipped}." if skipped else "."))
@@ -551,6 +666,7 @@ class Controller:
             self.queue_items = [
                 i for i in self.queue_items
                 if i.key not in keys or i.status in ("uploading", "verifying")]
+        self._save_queue_state()
 
     def move_in_queue(self, key: str, delta: int) -> None:
         with self.lock:
@@ -561,11 +677,13 @@ class Controller:
             new = max(0, min(len(self.queue_items) - 1, idx + delta))
             item = self.queue_items.pop(idx)
             self.queue_items.insert(new, item)
+        self._save_queue_state()
 
     def clear_finished(self) -> None:
         with self.lock:
             self.queue_items = [i for i in self.queue_items
                                 if i.status not in ("done", "cancelled")]
+        self._save_queue_state()
 
     def start_uploads(self, force: bool = False) -> None:
         if self.worker and self.worker.is_alive():
@@ -594,6 +712,8 @@ class Controller:
         self.worker.start()
         threading.Thread(target=self._pump_worker,
                          args=(self.worker_events,), daemon=True).start()
+        self._uploads_running = True
+        self._save_queue_state()
         self.log("Upload queue started.")
 
     def retry_failed(self) -> int:
@@ -605,6 +725,8 @@ class Controller:
                     item.detail = ""
                     item.progress = 0.0
                     count += 1
+        if count:
+            self._save_queue_state()
         self.log(f"Re-queued {count} failed upload(s)." if count
                  else "No failed uploads in the queue.")
         return count
@@ -633,18 +755,32 @@ class Controller:
                 self.log(ev["text"])
             elif etype == "item_status" and ev["status"] == "done":
                 verified = bool(ev.get("verified"))
+                key = ev["key"]
                 with self.lock:
-                    self.registry[ev["key"]] = {
+                    item = next((i for i in self.queue_items if i.key == key),
+                                None)
+                    self.registry[key] = {
                         "video_id": ev.get("video_id"),
-                        "title": next((i.title for i in self.queue_items
-                                       if i.key == ev["key"]), ""),
+                        "title": item.title if item else "",
+                        "folder": str(item.vod.folder) if item else "",
                         "uploaded_at": datetime.now(timezone.utc).isoformat(),
                         "verified": verified,
                     }
                     config.save_registry(self.registry)
                 mode = self.cfg.get("after_upload", "keep")
-                if verified and mode != "keep":
-                    self._dispose_vod(ev["key"], mode)
+                if mode == "keep":
+                    self._record_local(key, "kept",
+                                       "after-upload setting is “keep”")
+                elif not verified:
+                    self._record_local(key, "kept",
+                                       "not deleted — the upload could not be "
+                                       "verified on YouTube")
+                    self.log(f"Kept local files of {key}: upload not verified.")
+                else:
+                    self._dispose_vod(key, mode)
+                self._save_queue_state()
+            elif etype in ("item_status", "item_detail"):
+                self._save_queue_state()
             elif etype == "progress":
                 with self.lock:
                     for item in self.queue_items:
@@ -655,6 +791,9 @@ class Controller:
                                                f"ETA {int(ev['eta_s'])}s")
             elif etype == "worker_done":
                 reason = ev.get("reason", "")
+                # quota/daily-limit stops resume via the persisted cooldown
+                self._uploads_running = False
+                self._save_queue_state()
                 if reason == "quota":
                     until = limits.quota_cooldown(ev.get("detail", ""),
                                                   self.cfg.get("cooldown_hours"))
@@ -678,13 +817,34 @@ class Controller:
                               "paused": "Queue paused."}.get(reason, "Idle."))
 
     # ---------------------------------------------------------- housekeeping
+    def _record_local(self, key: str, state: str, detail: str,
+                      path: str = "") -> None:
+        """Remember what happened to a VOD's local files after its upload
+        (deleted / kept / failed / missing) — shown in the History view."""
+        with self.lock:
+            entry = self.registry.get(key)
+            if entry is None:
+                return
+            entry["local"] = {
+                "state": state, "detail": detail, "path": path,
+                "at": datetime.now(timezone.utc).isoformat(),
+            }
+            config.save_registry(self.registry)
+
     def _dispose_vod(self, key: str, mode: str) -> bool:
         """Server mode has no Recycle Bin — deletion is permanent."""
+        what = "folder" if mode == "trash_folder" else "video file"
         vod = self.vods.get(key)
         if vod is None:
+            self._record_local(key, "missing",
+                               f"VOD no longer in the scanned list — {what} "
+                               "not deleted by this app")
             return False
         target = vod.folder if mode == "trash_folder" else vod.video_path
         if target is None or not target.exists():
+            self._record_local(key, "missing",
+                               f"{what} was already gone before deletion",
+                               str(target or ""))
             return False
         try:
             if target.is_dir():
@@ -693,7 +853,17 @@ class Controller:
                 target.unlink()
         except OSError as exc:
             self.log(f"Could not delete {target}: {exc}")
+            self._record_local(key, "failed", f"could not delete {what}: {exc}",
+                               str(target))
             return False
+        if target.exists():
+            # rmtree on network shares can "succeed" yet leave the folder
+            self.log(f"Deleted {target}, but it is still on disk.")
+            self._record_local(key, "failed",
+                               f"{what} still exists after deleting it",
+                               str(target))
+            return False
+        self._record_local(key, "deleted", f"{what} deleted", str(target))
         with self.lock:
             entry = self.registry.setdefault(key, {})
             entry["local_deleted"] = True
@@ -714,18 +884,21 @@ class Controller:
             with self.lock:
                 for key in keys:
                     self.metas[key] = self._generate_meta(self.vods[key])
+            self._save_queue_state()
             self.log(f"Reset metadata for {len(keys)} video(s).")
             return {"count": len(keys)}
         if action == "privacy":
             with self.lock:
                 for key in keys:
                     self.metas[key]["privacy"] = value
+            self._save_queue_state()
             self.log(f"Set privacy '{value}' on {len(keys)} video(s).")
             return {"count": len(keys)}
         if action == "playlist":
             with self.lock:
                 for key in keys:
                     self.metas[key]["playlist_choice"] = value or "(default)"
+            self._save_queue_state()
             self.log(f"Set playlist '{value}' on {len(keys)} video(s).")
             return {"count": len(keys)}
         if action == "reset_state":
@@ -776,6 +949,49 @@ class Controller:
             return {"started": True, "count": len(candidates)}
         raise RuntimeError(f"unknown bulk action: {action}")
 
+    def history(self) -> list[dict]:
+        """Upload history joined with a live look at the disk, so you can
+        confirm that delete-after-upload really removed each VOD folder.
+        Touches the filesystem per entry — served on demand, not polled."""
+        with self.lock:
+            entries = {k: dict(v) for k, v in self.registry.items()}
+            root = Path(self.cfg.get("vod_folder") or VODS_DEFAULT)
+            video_paths = {k: v.video_path for k, v in self.vods.items()}
+        rows = []
+        for key, entry in entries.items():
+            folder = Path(entry.get("folder") or root / key)
+            folder_exists = folder.exists()
+            video = video_paths.get(key)
+            video_exists = bool(folder_exists and video and video.exists())
+            local = entry.get("local") or {}
+            state = local.get("state", "")
+            if state == "deleted":
+                # re-check now: what was deleted must still be gone
+                path = local.get("path")
+                still = Path(path).exists() if path else folder_exists
+                check = "still_on_disk" if still else "gone"
+            elif state:
+                check = state           # kept | failed | missing
+            elif entry.get("local_deleted"):
+                check = "gone" if not folder_exists else "legacy"
+            else:
+                check = "legacy"        # uploaded before tracking existed
+            rows.append({
+                "key": key,
+                "title": entry.get("title", ""),
+                "video_id": entry.get("video_id"),
+                "uploaded_at": entry.get("uploaded_at", ""),
+                "verified": bool(entry.get("verified")),
+                "failed": bool(entry.get("failed")),
+                "local": local,
+                "check": check,
+                "folder": str(folder),
+                "folder_exists": folder_exists,
+                "video_exists": video_exists,
+            })
+        rows.sort(key=lambda r: r["uploaded_at"] or "", reverse=True)
+        return rows
+
     def _verify_worker(self, keys: list[str]) -> None:
         try:
             service = auth.build_service(self.credentials)
@@ -804,6 +1020,7 @@ class Controller:
         while True:
             time.sleep(1)
             try:
+                self._resume_tick()
                 self._cooldown_tick()
                 if not self.cfg.get("auto_scan"):
                     self.auto_status = "off"
@@ -893,6 +1110,8 @@ class Controller:
                 "privacy": i.privacy, "status": i.status,
                 "detail": i.detail, "progress": round(i.progress, 1),
                 "video_id": i.video_id,
+                "local": (self.registry.get(i.key) or {}).get("local")
+                if i.status == "done" else None,
             } for i in self.queue_items]
             cooldown = limits.get_cooldown(self.cfg)
             return {
@@ -937,3 +1156,4 @@ class Controller:
                 if field in patch:
                     meta[field] = patch[field]
             meta["title"] = scanner.sanitize_title(meta["title"])
+        self._save_queue_state()

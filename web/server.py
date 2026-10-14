@@ -162,6 +162,11 @@ def create_app() -> FastAPI:
         ctl.clear_finished()
         return {"ok": True}
 
+    @app.get("/api/history")
+    def history():
+        return {"history": ctl.history(),
+                "after_upload": ctl.cfg.get("after_upload", "keep")}
+
     @app.post("/api/auth/start")
     def auth_start():
         return ctl.start_sign_in()
