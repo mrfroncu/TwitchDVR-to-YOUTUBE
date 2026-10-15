@@ -4,7 +4,13 @@
       "Bash(grep -v -E '\\\\.\\(png|ico|icns\\)$')",
       "Bash(python3 -c \"import fastapi, googleapiclient, google_auth_oauthlib; print\\('deps ok'\\)\")",
       "Bash(node --check web/static/app.js)",
-      "Bash(python3 -W ignore smoke.py \"/Users/mfronc/Documents/#VisualStudio-Github/TwitchDVR-to-YOUTUBE\")"
+      "Bash(python3 -W ignore smoke.py \"/Users/mfronc/Documents/#VisualStudio-Github/TwitchDVR-to-YOUTUBE\")",
+      "Bash(awk '{print $2}')",
+      "Bash(git bundle *)",
+      "Bash(FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch -f --env-filter 'export GIT_AUTHOR_NAME=\"mrfroncu\" GIT_AUTHOR_EMAIL=\"henashd@gmail.com\" GIT_COMMITTER_NAME=\"mrfroncu\" GIT_COMMITTER_EMAIL=\"henashd@gmail.com\"' --msg-filter 'grep -viE \"^co-authored-by: *claude\" | perl -0pe \"s/\\\\n+\\\\z/\\\\n/\"' --tag-name-filter cat -- --branches --tags)",
+      "Bash(git stash *)",
+      "WebSearch",
+      "WebFetch(domain:developers.google.com)"
     ]
   }
 }
