@@ -780,7 +780,8 @@ async function connectYouTube() {
 /* ---------------------------------------------------------- settings */
 function renderSettings() {
   if (["set-template", "client-id", "client-secret", "folder-input", "set-daily",
-       "set-desc-template", "set-speed", "set-cooldown-h", "set-extra-tags"]
+       "set-desc-template", "set-speed", "set-cooldown-h", "set-extra-tags",
+       "set-lsdvr-url", "set-lsdvr-pass"]
       .includes(document.activeElement?.id)) return;
   el("set-daily").value = S.cfg.daily_upload_limit ?? 0;
   el("set-desc-template").value = S.cfg.description_template || "";
@@ -794,6 +795,10 @@ function renderSettings() {
   el("set-notify").checked = !!S.cfg.notify_subscribers;
   el("set-kids").checked = !!S.cfg.made_for_kids;
   el("set-after").value = S.cfg.after_upload || "keep";
+  el("set-lsdvr-delete").checked = !!S.cfg.lsdvr_delete;
+  el("set-lsdvr-url").value = S.cfg.lsdvr_url || "";
+  el("set-lsdvr-pass").placeholder = S.has_lsdvr_password
+    ? "saved — type to replace" : "panel password (empty if none)";
   if (document.activeElement !== el("folder-input")) {
     el("folder-input").value = S.cfg.vod_folder || "";
   }
@@ -813,7 +818,29 @@ function saveSettings() {
     cooldown_hours: parseFloat(el("set-cooldown-h").value) || 24.5,
     verify_uploads: el("set-verify").checked,
     extra_tags: el("set-extra-tags").value,
+    lsdvr_delete: el("set-lsdvr-delete").checked,
+    lsdvr_url: el("set-lsdvr-url").value.trim(),
   });
+}
+async function saveLsdvrPassword() {
+  const pass = el("set-lsdvr-pass").value;
+  if (!pass) return;
+  await api("/api/settings", { lsdvr_password: pass });
+  el("set-lsdvr-pass").value = "";
+  toast("LiveStreamDVR password saved", true);
+}
+async function testLsdvr() {
+  const status = el("lsdvr-status");
+  status.textContent = "testing…";
+  try {
+    const data = await api("/api/lsdvr/test", {
+      url: el("set-lsdvr-url").value.trim(),
+      password: el("set-lsdvr-pass").value,
+    });
+    status.textContent = "✓ " + data.message;
+  } catch (e) {
+    status.textContent = "✗ not connected";
+  }
 }
 
 /* ---------------------------------------------------------- log bar */

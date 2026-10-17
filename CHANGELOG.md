@@ -4,6 +4,27 @@ Release versions come from the `VERSION` file; each release's notes are the
 matching section of this file. Bump `VERSION` and add a section here to cut
 a new release.
 
+## 2.6.8 — 2026-10-17
+
+### 🧹 Web/Docker: optionally delete VODs through LiveStreamDVR
+- LiveStreamDVR watches its VOD folders. Deleting a folder behind its back
+  could crash it (on Unraid: `Unknown system error -116, scandir`), and it
+  then stayed off — missing every stream until someone restarted it.
+- New **Settings → LiveStreamDVR** card: a switch to delete through the
+  LiveStreamDVR API instead of the filesystem, its address, its password,
+  and a **Test connection** button. LiveStreamDVR stops watching the VOD
+  first, so it no longer crashes.
+- Covers both the after-upload cleanup and **Delete local**. "Delete the
+  video file" keeps the VOD entry in LiveStreamDVR (marked as stored in the
+  cloud); "Delete the whole VOD folder" removes the VOD from it.
+- Nothing is deleted while LiveStreamDVR is still recording or converting
+  the VOD, when it's marked "prevent deletion", or when LiveStreamDVR can't
+  be reached — History shows the reason, and **Delete local** retries.
+- LiveStreamDVR has no API keys, so the password is the one of its web
+  panel (leave it empty if there is none). It's stored in the config and
+  never sent back to the browser.
+- Off by default; with the switch off, files are deleted exactly as before.
+
 ## 2.6.7 — 2026-10-14
 
 ### 🐛 Web/Docker: the queue survives a container restart

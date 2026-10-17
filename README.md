@@ -210,6 +210,10 @@ Notes:
   with authentication.
 - Server mode has no recycle bin: the optional after-upload cleanup **deletes files
   permanently** (still only after YouTube confirmed the video exists).
+- If LiveStreamDVR is running, turn on **Settings → LiveStreamDVR → Delete through the
+  LiveStreamDVR API** and enter its address (e.g. `http://192.168.1.10:8080`) and web
+  panel password. Deleting its folders directly can crash LiveStreamDVR; through its API
+  it stops watching the VOD first.
 
 ### Automatic deployment to your server
 

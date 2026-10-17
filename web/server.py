@@ -116,6 +116,11 @@ def create_app() -> FastAPI:
         ctl.update_settings(patch)
         return {"ok": True}
 
+    @app.post("/api/lsdvr/test")
+    def lsdvr_test(body: dict):
+        return {"message": ctl.lsdvr_test(str(body.get("url", "")).strip(),
+                                          str(body.get("password", "")))}
+
     @app.patch("/api/meta/{key}")
     def meta(key: str, body: MetaBody):
         try:

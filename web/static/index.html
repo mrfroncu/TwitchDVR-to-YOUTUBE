@@ -398,6 +398,35 @@
       <p class="muted">Server mode has no recycle bin — deletion is permanent and only
         ever happens after YouTube confirms the video exists.</p>
     </div>
+    <div class="card pad">
+      <h2>LiveStreamDVR</h2>
+      <label class="switch-row"><input type="checkbox" id="set-lsdvr-delete"
+        onchange="saveSettings()"><span>Delete through the LiveStreamDVR API instead
+        of deleting files directly</span></label>
+      <p class="muted">LiveStreamDVR watches its VOD folders, and deleting them behind
+        its back can crash it — it then stays off until someone restarts it. With
+        this on, the after-upload cleanup and <b>Delete local</b> ask LiveStreamDVR to
+        delete the VOD, so it stops watching it first. “Delete the video file” keeps
+        the VOD entry in LiveStreamDVR; “Delete the whole VOD folder” removes the VOD
+        from it. If LiveStreamDVR can't be reached, nothing is deleted and History
+        shows why.</p>
+      <div class="field-row">
+        <span>Address</span>
+        <input id="set-lsdvr-url" class="input grow" spellcheck="false"
+               placeholder="http://192.168.1.10:8080" onchange="saveSettings()">
+      </div>
+      <div class="field-row">
+        <span>Password</span>
+        <input id="set-lsdvr-pass" class="input grow" type="password"
+               autocomplete="new-password" spellcheck="false"
+               onchange="saveLsdvrPassword()">
+        <button class="btn" onclick="testLsdvr()">Test connection</button>
+        <span id="lsdvr-status" class="muted"></span>
+      </div>
+      <p class="muted">LiveStreamDVR has no API keys — it uses the password of its own
+        web panel. Leave it empty if the panel has none. The password is stored in
+        the app's config and never sent back to the browser.</p>
+    </div>
   </section>
 
   <!-- ============================================================= ABOUT -->

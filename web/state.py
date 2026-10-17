@@ -16,7 +16,7 @@ from pathlib import Path
 
 import json as _json
 
-from app import auth, config, limits, playlists, scanner, ytmanager
+from app import auth, config, limits, lsdvr, playlists, scanner, ytmanager
 from app.scanner import Vod
 from app.uploader import QueueItem, UploadWorker, verify_video
 from app.version import __version__
@@ -833,6 +833,8 @@ class Controller:
 
     def _dispose_vod(self, key: str, mode: str) -> bool:
         """Server mode has no Recycle Bin — deletion is permanent."""
+        if self.cfg.get("lsdvr_delete"):
+            return self._dispose_vod_lsdvr(key, mode)
         what = "folder" if mode == "trash_folder" else "video file"
         vod = self.vods.get(key)
         if vod is None:
@@ -874,6 +876,98 @@ class Controller:
                 self.metas.pop(key, None)
         self.log(f"Deleted local files: {target}")
         return True
+
+    def _dispose_vod_lsdvr(self, key: str, mode: str) -> bool:
+        """Same outcome as _dispose_vod, but LiveStreamDVR deletes the files.
+        "Delete the video file" keeps the VOD entry in LiveStreamDVR (marked
+        as stored in the cloud); "delete the folder" removes the VOD there.
+        Nothing is deleted locally when LiveStreamDVR can't do it."""
+        what = "folder" if mode == "trash_folder" else "video file"
+        vod = self.vods.get(key)
+        if vod is None:
+            self._record_local(key, "missing",
+                               f"VOD no longer in the scanned list — {what} "
+                               "not deleted by this app")
+            return False
+        video = vod.video_path
+        if not vod.json_path.exists() or (mode != "trash_folder" and (
+                video is None or not video.exists())):
+            self._record_local(key, "missing",
+                               f"{what} was already gone before deletion",
+                               str(video or vod.folder))
+            return False
+        try:
+            info = lsdvr.read_vod_info(vod.json_path)
+        except (OSError, ValueError) as exc:
+            self._record_local(key, "failed", "could not read LiveStreamDVR's "
+                               f"VOD file: {exc}", str(vod.json_path))
+            return False
+        uuid = info.get("uuid")
+        busy = [word for flag, word in (("is_capturing", "recording"),
+                                        ("is_converting", "converting"))
+                if info.get(flag)]
+        if not uuid:
+            reason = "its VOD file has no uuid (made by an old LiveStreamDVR?)"
+        elif busy:
+            reason = f"LiveStreamDVR is still {' and '.join(busy)} it"
+        elif info.get("prevent_deletion"):
+            reason = "it is marked “prevent deletion” in LiveStreamDVR"
+        else:
+            reason = ""
+        if reason:
+            self.log(f"Kept local files of {key}: {reason}.")
+            self._record_local(key, "kept", f"not deleted — {reason}",
+                               str(vod.folder))
+            return False
+        try:
+            client = lsdvr.Client(self.cfg.get("lsdvr_url", ""),
+                                  self.cfg.get("lsdvr_password", ""))
+            if mode == "trash_folder":
+                client.delete_vod(uuid)
+            else:
+                client.delete_segment(uuid, lsdvr.segment_index(info, video))
+        except lsdvr.LsdvrError as exc:
+            self.log(f"LiveStreamDVR could not delete {key}: {exc}")
+            self._record_local(key, "failed", f"LiveStreamDVR: {exc}",
+                               str(vod.folder))
+            return False
+        if mode == "trash_folder":
+            left = [p for p in (vod.json_path, video) if p and p.exists()]
+        else:
+            left = [video] if video and video.exists() else []
+        if left:
+            self.log(f"LiveStreamDVR deleted {key}, but {left[0].name} is "
+                     "still on disk.")
+            self._record_local(key, "failed", f"LiveStreamDVR reported success "
+                               f"but {left[0].name} is still on disk",
+                               str(left[0]))
+            return False
+        detail = f"{what} deleted by LiveStreamDVR"
+        # The History view re-checks this path. LiveStreamDVR deletes only the
+        # files it knows, so a folder holding anything else (.DS_Store, a
+        # thumbnail) stays; point the check at the video then.
+        path = vod.folder if mode == "trash_folder" else video
+        if mode == "trash_folder" and vod.folder.exists():
+            extra = sum(1 for _ in vod.folder.iterdir())
+            detail += f"; the folder stays with {extra} unrelated file(s)"
+            path = video or vod.json_path
+        self._record_local(key, "deleted", detail, str(path))
+        with self.lock:
+            entry = self.registry.setdefault(key, {})
+            entry["local_deleted"] = True
+            config.save_registry(self.registry)
+            if mode == "trash_folder":
+                self.vods.pop(key, None)
+                self.metas.pop(key, None)
+        self.log(f"LiveStreamDVR deleted the {what} of {key}.")
+        return True
+
+    def lsdvr_test(self, url: str = "", password: str = "") -> str:
+        """Settings → Test connection. Takes what is typed in the form, so it
+        works before the fields are saved; falls back to the saved values."""
+        client = lsdvr.Client(url or self.cfg.get("lsdvr_url", ""),
+                              password or self.cfg.get("lsdvr_password", ""))
+        return client.check()
 
     def bulk(self, action: str, keys: list[str], value: str = "") -> dict:
         keys = [k for k in keys if k in self.vods]
@@ -1127,8 +1221,10 @@ class Controller:
                          "channel": self.channel["title"] if self.channel else None},
                 "accounts": auth.list_accounts(),
                 "active_account": self.cfg.get("active_account", ""),
-                "cfg": {k: v for k, v in self.cfg.items() if k != "client_secret"},
+                "cfg": {k: v for k, v in self.cfg.items()
+                        if k not in ("client_secret", "lsdvr_password")},
                 "has_client_secret": bool(self.cfg.get("client_secret")),
+                "has_lsdvr_password": bool(self.cfg.get("lsdvr_password")),
                 "vods": vods,
                 "queue": queue,
                 "uploading": bool(self.worker and self.worker.is_alive()),
@@ -1141,6 +1237,10 @@ class Controller:
         allowed = set(config.DEFAULTS) | {"vod_folder"}
         with self.lock:
             for key, value in patch.items():
+                # the browser never gets the saved password back, so an
+                # empty field means "keep it", not "clear it"
+                if key == "lsdvr_password" and not value:
+                    continue
                 if key in allowed:
                     self.cfg[key] = value
             config.save_config(self.cfg)
