@@ -12,9 +12,11 @@ import secrets
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+
+from app.version import __version__
 
 from .state import Controller
 
@@ -72,6 +74,15 @@ def create_app() -> FastAPI:
                 return JSONResponse(status_code=401,
                                     content={"error": "login required"})
         return await call_next(request)
+
+    @app.middleware("http")
+    async def _revalidate_static(request: Request, call_next):
+        response = await call_next(request)
+        if request.url.path.startswith("/static/"):
+            # Without a Cache-Control header browsers reuse a cached app.js
+            # for a while, so right after an update the new page ran old code.
+            response.headers["Cache-Control"] = "no-cache"
+        return response
 
     @app.post("/api/login")
     def login(body: dict, response: Response):
@@ -277,7 +288,13 @@ def create_app() -> FastAPI:
 
     @app.get("/")
     def index():
-        return FileResponse(STATIC_DIR / "index.html")
+        # The version in the asset URLs also retires copies that browsers
+        # cached before the header above existed.
+        html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+        for asset in ("app.js", "style.css"):
+            html = html.replace(f'/static/{asset}"',
+                                f'/static/{asset}?v={__version__}"')
+        return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     return app

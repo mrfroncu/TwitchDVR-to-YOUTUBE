@@ -4,6 +4,16 @@ Release versions come from the `VERSION` file; each release's notes are the
 matching section of this file. Bump `VERSION` and add a section here to cut
 a new release.
 
+## 2.6.9 — 2026-10-17
+
+### 🐛 Web/Docker: an update no longer leaves the browser on old code
+- The server sent its scripts without caching rules, so right after an
+  update browsers kept running the old `app.js` against the new page.
+  In 2.6.8 that meant the new LiveStreamDVR settings looked fine but
+  saved nothing and **Test connection** did nothing.
+- The page now links its scripts with the app version, and the browser is
+  told to check for a newer copy every time.
+
 ## 2.6.8 — 2026-10-17
 
 ### 🧹 Web/Docker: optionally delete VODs through LiveStreamDVR
