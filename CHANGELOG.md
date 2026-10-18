@@ -4,6 +4,31 @@ Release versions come from the `VERSION` file; each release's notes are the
 matching section of this file. Bump `VERSION` and add a section here to cut
 a new release.
 
+## 2.6.10 — 2026-10-18
+
+### 🧹 Desktop: optionally delete VODs through LiveStreamDVR
+- The same LiveStreamDVR deletion added to the web/Docker version in 2.6.8 is
+  now also in the desktop app: deleting a VOD folder behind LiveStreamDVR's
+  back can crash it, until someone restarts it.
+- New **Settings → LiveStreamDVR** page: a switch to delete through the
+  LiveStreamDVR API instead of the filesystem, its address, its password,
+  and a **Test connection** button. Off by default; with it off, files are
+  recycled/deleted exactly as before.
+- Covers both the after-upload cleanup and the manual recycle/delete local
+  actions. "Move video file to Recycle Bin" keeps the VOD entry in
+  LiveStreamDVR (marked as stored in the cloud); "Move whole VOD folder to
+  Recycle Bin" removes the VOD from it — through the API, both are always
+  permanent (no actual Recycle Bin involved).
+- Nothing is deleted while LiveStreamDVR is still recording or converting
+  the VOD, when it's marked "prevent deletion", or when LiveStreamDVR can't
+  be reached — the log explains why.
+
+### 🐛 Desktop: duplicate icon on the Playlists tab
+- The tab itself (📃 Playlists) and the "Default playlist for uploads" box
+  inside it used the same 📃 icon. The box now uses ⚙, in line with the
+  icon-consistency pass done elsewhere (a section's icon never repeats its
+  parent tab's).
+
 ## 2.6.9 — 2026-10-17
 
 ### 🐛 Web/Docker: an update no longer leaves the browser on old code

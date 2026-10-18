@@ -42,8 +42,8 @@ DEFAULTS = {
     "made_for_kids": False,
     "after_upload": "keep",         # keep | trash_video | trash_folder
     "recycle_fallback_delete": False,  # permanently delete if Recycle Bin fails (e.g. network drives)
-    # Web/Docker mode: let LiveStreamDVR delete VODs through its API, so it
-    # stops watching them first (deleting behind its back can crash it)
+    # Let LiveStreamDVR delete VODs through its own API, so it stops
+    # watching them first (deleting behind its back can crash it)
     "lsdvr_delete": False,
     "lsdvr_url": "",                # e.g. http://192.168.1.10:8080
     "lsdvr_password": "",           # its web panel password; it has no API keys

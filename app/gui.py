@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from . import auth, config, limits, notify, playlists, scanner, updater, ytmanager
+from . import auth, config, limits, lsdvr, notify, playlists, scanner, updater, ytmanager
 from .scanner import Vod
 from .uploader import QueueItem, UploadWorker, verify_video
 from .version import __version__
@@ -1584,6 +1584,69 @@ class App:
         ttk.Label(row, text="what generated titles/descriptions look like",
                   style="Muted.TLabel").pack(side="left", padx=8)
 
+        # ------------------------------------------------------------ livestreamdvr --
+        lsd = add_page("lsdvr", "📡", "LiveStreamDVR")
+        ttk.Label(
+            lsd, text="LiveStreamDVR watches its VOD folders, and deleting one behind "
+                      "its back can crash it — it then stays down until someone "
+                      "restarts it. With this on, the after-upload cleanup and the "
+                      "video list's delete/recycle actions ask LiveStreamDVR to "
+                      "delete the VOD through its own API instead, so it stops "
+                      "watching it first. “Move video file to Recycle Bin” keeps the "
+                      "VOD entry in LiveStreamDVR (marked as stored in the cloud); "
+                      "“Move whole VOD folder to Recycle Bin” removes the VOD there. "
+                      "Deletion through LiveStreamDVR is always permanent — the "
+                      "Recycle Bin and the permanent-delete fallback above don't "
+                      "apply. If LiveStreamDVR can't be reached, nothing is deleted.",
+            wraplength=900, style="Muted.TLabel", justify="left"
+        ).pack(anchor="w", padx=8, pady=(0, 10))
+
+        row = ttk.Frame(lsd)
+        row.pack(fill="x", padx=8, pady=2)
+        self.lsdvr_delete_var = tk.BooleanVar(
+            value=bool(self.cfg.get("lsdvr_delete", False)))
+        ttk.Checkbutton(
+            row, text="Delete through the LiveStreamDVR API instead of deleting "
+                      "files directly",
+            variable=self.lsdvr_delete_var,
+            command=lambda: self.save_settings(silent=True)).pack(side="left")
+
+        row = ttk.Frame(lsd)
+        row.pack(fill="x", padx=8, pady=(10, 2))
+        ttk.Label(row, text="Address:").pack(side="left")
+        self.lsdvr_url_var = tk.StringVar(value=self.cfg.get("lsdvr_url", ""))
+        lsdvr_url_entry = ttk.Entry(row, textvariable=self.lsdvr_url_var, width=40)
+        lsdvr_url_entry.pack(side="left", padx=6)
+        autosave(lsdvr_url_entry)
+        ttk.Label(row, text="e.g. http://192.168.1.10:8080", style="Muted.TLabel"
+                  ).pack(side="left")
+
+        row = ttk.Frame(lsd)
+        row.pack(fill="x", padx=8, pady=2)
+        ttk.Label(row, text="Password:").pack(side="left")
+        self.lsdvr_password_var = tk.StringVar(value="")
+        lsdvr_pass_entry = ttk.Entry(row, textvariable=self.lsdvr_password_var,
+                                     width=24, show="*")
+        lsdvr_pass_entry.pack(side="left", padx=6)
+        lsdvr_pass_entry.bind("<FocusOut>", lambda _e: self._save_lsdvr_password())
+        lsdvr_pass_entry.bind("<Return>", lambda _e: self._save_lsdvr_password())
+        self.lsdvr_pass_hint = ttk.Label(
+            row, text="(saved)" if self.cfg.get("lsdvr_password")
+                      else "(empty if the panel has none)",
+            style="Muted.TLabel")
+        self.lsdvr_pass_hint.pack(side="left", padx=(4, 14))
+        ttk.Button(row, text="Test connection", command=self._test_lsdvr
+                   ).pack(side="left")
+        self.lsdvr_status_label = ttk.Label(row, text="", style="Muted.TLabel")
+        self.lsdvr_status_label.pack(side="left", padx=8)
+
+        ttk.Label(
+            lsd, text="LiveStreamDVR has no API keys — it uses the password of its "
+                      "own web panel. The password is stored in this app's config "
+                      "and the field above is left blank again after saving.",
+            wraplength=900, style="Muted.TLabel", justify="left"
+        ).pack(anchor="w", padx=8, pady=(10, 0))
+
         # ----------------------------------------------------------------- behavior --
         beh = add_page("behavior", "⚙", "Behavior")
         row = ttk.Frame(beh)
@@ -2269,7 +2332,12 @@ class App:
                 "Use “Verify on YouTube” first if needed.")
             return
         fallback_note = ""
-        if self.cfg.get("recycle_fallback_delete", False):
+        if self.cfg.get("lsdvr_delete", False):
+            fallback_note = (
+                "\n\nLiveStreamDVR deletion is enabled in Settings — these VODs "
+                "will be deleted permanently through the LiveStreamDVR API "
+                "instead of the Recycle Bin.")
+        elif self.cfg.get("recycle_fallback_delete", False):
             fallback_note = (
                 "\n\n⚠ Permanent-delete fallback is enabled in Settings — if "
                 "the Recycle Bin isn't available for a file (e.g. some "
@@ -2324,7 +2392,11 @@ class App:
             warn = (f"\n\n⚠ {unverified} of these {len(candidates)} video(s) "
                     "have NOT been confirmed uploaded and verified on "
                     "YouTube — deleting them now risks losing the only copy.")
-        if self.cfg.get("recycle_fallback_delete", False):
+        if self.cfg.get("lsdvr_delete", False):
+            warn += ("\n\nLiveStreamDVR deletion is enabled in Settings — these "
+                     "VODs will be deleted permanently through the "
+                     "LiveStreamDVR API instead of the Recycle Bin.")
+        elif self.cfg.get("recycle_fallback_delete", False):
             warn += ("\n\n⚠ Permanent-delete fallback is enabled in Settings "
                      "— if the Recycle Bin isn't available for a file, it "
                      "will be DELETED PERMANENTLY instead.")
@@ -2477,7 +2549,7 @@ class App:
                   style="Muted.TLabel").pack(anchor="w", padx=10)
 
         rule = ttk.LabelFrame(
-            tab, text="📃 Default playlist for uploads (per-video override on the Videos tab)")
+            tab, text="⚙ Default playlist for uploads (per-video override on the Videos tab)")
         rule.pack(fill="x", padx=10, pady=(4, 10))
         self.pl_mode_var = tk.StringVar(value=self.cfg.get("playlist_mode", "none"))
         row = ttk.Frame(rule)
@@ -2582,6 +2654,8 @@ class App:
     def _recycle_vod(self, key: str, mode: str, log=None) -> bool:
         """Thread-safe when a `log` callback is supplied (no Tk calls then)."""
         log = log or self._log
+        if self.cfg.get("lsdvr_delete"):
+            return self._dispose_vod_lsdvr(key, mode, log)
         if send2trash is None:
             log("Recycle unavailable: the 'Send2Trash' package is not "
                 "installed (pip install Send2Trash).")
@@ -2621,6 +2695,69 @@ class App:
             log(f"Recycle Bin wasn't available — permanently deleted: {target}")
         else:
             log(f"Moved to Recycle Bin: {target}")
+        return True
+
+    def _dispose_vod_lsdvr(self, key: str, mode: str, log) -> bool:
+        """Same outcome as _recycle_vod, but LiveStreamDVR deletes the files
+        through its own API so it stops watching them first, instead of
+        being caught off guard by files vanishing from under it. "Delete the
+        video file" keeps the VOD entry in LiveStreamDVR (marked as stored
+        in the cloud); "delete the folder" removes the VOD there. Nothing is
+        deleted locally — not even to the Recycle Bin — when LiveStreamDVR
+        can't do it."""
+        vod = self.vods.get(key)
+        item = self._item_by_key(key)
+        if vod is None and item is not None:
+            vod = item.vod
+        if vod is None:
+            return False
+        video = vod.video_path
+        if not vod.json_path.exists() or (mode != "trash_folder" and (
+                video is None or not video.exists())):
+            return False
+        try:
+            info = lsdvr.read_vod_info(vod.json_path)
+        except (OSError, ValueError) as exc:
+            log(f"Could not read LiveStreamDVR's VOD file for {key}: {exc}")
+            return False
+        uuid = info.get("uuid")
+        busy = [word for flag, word in (("is_capturing", "recording"),
+                                        ("is_converting", "converting"))
+                if info.get(flag)]
+        if not uuid:
+            reason = "its VOD file has no uuid (made by an old LiveStreamDVR?)"
+        elif busy:
+            reason = f"LiveStreamDVR is still {' and '.join(busy)} it"
+        elif info.get("prevent_deletion"):
+            reason = "it is marked “prevent deletion” in LiveStreamDVR"
+        else:
+            reason = ""
+        if reason:
+            log(f"Kept local files of {key}: {reason}.")
+            return False
+        try:
+            client = lsdvr.Client(self.cfg.get("lsdvr_url", ""),
+                                  self.cfg.get("lsdvr_password", ""))
+            if mode == "trash_folder":
+                client.delete_vod(uuid)
+            else:
+                client.delete_segment(uuid, lsdvr.segment_index(info, video))
+        except lsdvr.LsdvrError as exc:
+            log(f"LiveStreamDVR could not delete {key}: {exc}")
+            return False
+        if mode == "trash_folder":
+            left = [p for p in (vod.json_path, video) if p and p.exists()]
+        else:
+            left = [video] if video and video.exists() else []
+        if left:
+            log(f"LiveStreamDVR deleted {key}, but {left[0].name} is still "
+                "on disk.")
+            return False
+        entry = self.registry.setdefault(key, {})
+        entry["local_deleted"] = True
+        config.save_registry(self.registry)
+        what = "folder" if mode == "trash_folder" else "video file"
+        log(f"LiveStreamDVR deleted the {what} of {key}.")
         return True
 
     def _forget_vod(self, key: str) -> None:
@@ -3239,6 +3376,9 @@ class App:
                          "refreshing the list…")
                 self._log(f"Recycled {done} of {total} VOD folder(s).")
                 self.scan_folder()
+        elif etype == "lsdvr_test_result":
+            prefix = "✓ " if ev["ok"] else "✗ "
+            self.lsdvr_status_label.configure(text=prefix + ev["message"])
         elif etype == "item_status":
             item = self._item_by_key(ev["key"])
             if item and ev["status"] == "done":
@@ -3582,6 +3722,8 @@ class App:
         self.cfg["after_upload"] = config.AFTER_UPLOAD_CHOICES.get(
             self.after_upload_var.get(), "keep")
         self.cfg["recycle_fallback_delete"] = bool(self.recycle_fallback_var.get())
+        self.cfg["lsdvr_delete"] = bool(self.lsdvr_delete_var.get())
+        self.cfg["lsdvr_url"] = self.lsdvr_url_var.get().strip()
         try:
             self.cfg["daily_upload_limit"] = max(0, int(self.daily_limit_var.get()))
         except ValueError:
@@ -3602,6 +3744,34 @@ class App:
         config.save_config(self.cfg)
         if not silent:
             self._log("Settings saved.")
+
+    def _save_lsdvr_password(self) -> None:
+        """Only overwrites the saved password when the field isn't empty —
+        it's always blank on screen, so an empty field means "unchanged"."""
+        pw = self.lsdvr_password_var.get()
+        if not pw:
+            return
+        self.cfg["lsdvr_password"] = pw
+        config.save_config(self.cfg)
+        self.lsdvr_password_var.set("")
+        self.lsdvr_pass_hint.configure(text="(saved)")
+        self._log("LiveStreamDVR password saved.")
+
+    def _test_lsdvr(self) -> None:
+        url = self.lsdvr_url_var.get().strip()
+        password = self.lsdvr_password_var.get() or self.cfg.get("lsdvr_password", "")
+        self.lsdvr_status_label.configure(text="testing…")
+
+        def worker():
+            try:
+                message = lsdvr.Client(url, password).check()
+                self.events.put({"type": "lsdvr_test_result", "ok": True,
+                                 "message": message})
+            except lsdvr.LsdvrError as exc:
+                self.events.put({"type": "lsdvr_test_result", "ok": False,
+                                 "message": str(exc)})
+
+        threading.Thread(target=worker, daemon=True).start()
 
     # ------------------------------------------------------------------ misc --
     def _log(self, text: str) -> None:

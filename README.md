@@ -47,6 +47,10 @@ Twitch VOD recordings to YouTube — sequentially, with all the stream metadata 
   VOD folder — to the Recycle Bin, automatically (Settings → "After verified upload") or
   manually via the bulk "🗑 Recycle local files" button. Files are never touched unless
   YouTube confirmed the video exists, and they go to the Recycle Bin, not permanent deletion.
+- **Optional LiveStreamDVR deletion**: if LiveStreamDVR is running, Settings → LiveStreamDVR
+  can delete through its own API instead of the filesystem — deleting a VOD folder behind
+  its back can crash it, while its API stops watching the VOD first. Deletion through
+  LiveStreamDVR is always permanent (it bypasses the Recycle Bin).
 - Modern Fluent-inspired UI with dark and light mode (Settings → Appearance), animated
   upload progress, and a theme-matched title bar — drawn natively, so it stays responsive
 - **Multiple channels**: add several YouTube accounts/brand channels and switch the active
