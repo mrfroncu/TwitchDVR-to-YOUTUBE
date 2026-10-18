@@ -4,6 +4,20 @@ Release versions come from the `VERSION` file; each release's notes are the
 matching section of this file. Bump `VERSION` and add a section here to cut
 a new release.
 
+## 2.7.1 — 2026-10-18
+
+### 🐛 LiveStreamDVR deletion: stop getting stuck on orphaned VODs
+- If a VOD's folder was still on disk but LiveStreamDVR no longer had any
+  database record of it (e.g. an old capture from before a reset/migration),
+  deletion through the LiveStreamDVR API failed forever with "Vod not
+  found" and the leftover files could never be cleaned up from the app.
+- LiveStreamDVR not knowing about a VOD also means it isn't watching it, so
+  it's now safe to fall back to deleting those leftover files directly
+  (Recycle Bin on desktop, permanent on web/Docker) instead of giving up.
+- Other LiveStreamDVR failures (busy recording/converting, "prevent
+  deletion", unreachable, out of disk space on its own server, etc.) are
+  unaffected — those still leave local files untouched, as before.
+
 ## 2.7.0 — 2026-10-18
 
 ### 🗂️ Multiple independent upload queues

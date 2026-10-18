@@ -587,6 +587,9 @@ class QueueRuntime:
     def _dispose_vod(self, key: str, mode: str) -> bool:
         if self.setting("lsdvr_delete"):
             return self._dispose_vod_lsdvr(key, mode)
+        return self._dispose_vod_local(key, mode)
+
+    def _dispose_vod_local(self, key: str, mode: str) -> bool:
         what = "folder" if mode == "trash_folder" else "video file"
         vod = self.vods.get(key)
         if vod is None:
@@ -686,6 +689,15 @@ class QueueRuntime:
             else:
                 client.delete_segment(vod_uuid, lsdvr.segment_index(info, video))
         except lsdvr.LsdvrError as exc:
+            if "not found" in str(exc).lower():
+                # LiveStreamDVR has no database record of this VOD at all, so
+                # it isn't watching/managing it either — deleting the leftover
+                # files ourselves can't trigger the crash this feature exists
+                # to avoid.
+                self.log(f"LiveStreamDVR has no record of {key} anymore "
+                         "(already gone from its database) — deleting the "
+                         "leftover files directly instead.")
+                return self._dispose_vod_local(key, mode)
             self.log(f"LiveStreamDVR could not delete {key}: {exc}")
             self._record_local(key, "failed", f"LiveStreamDVR: {exc}", str(vod.folder))
             return False
