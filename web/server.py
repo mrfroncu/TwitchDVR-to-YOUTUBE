@@ -4,6 +4,12 @@ Set the WEB_PASSWORD environment variable (e.g. via an .env file next to
 docker-compose.yml) to require signing in. The login form lives in the web
 UI itself; a successful login sets an HttpOnly session cookie (valid until
 the container restarts).
+
+Most routes are scoped to one queue (/api/queues/{queue_id}/...) — see
+app/queue_runtime.py for what a "queue" is. A handful of routes are
+app-wide (settings, the YouTube account pool, update checks) or account-
+scoped rather than queue-scoped (the "My YouTube" manager, which browses an
+arbitrary signed-in channel's existing videos).
 """
 from __future__ import annotations
 
@@ -57,6 +63,16 @@ class PlaylistBody(BaseModel):
     privacy: str = "unlisted"
 
 
+class CreateQueueBody(BaseModel):
+    name: str = ""
+    vod_folder: str = ""
+    account_id: str = ""
+
+
+class ReorderBody(BaseModel):
+    order: list[str]
+
+
 def create_app() -> FastAPI:
     ctl = Controller()
     app = FastAPI(title="TwitchDVR to YouTube", docs_url=None, redoc_url=None)
@@ -104,6 +120,10 @@ def create_app() -> FastAPI:
     async def _runtime_error(_request, exc: RuntimeError):
         return JSONResponse(status_code=400, content={"error": str(exc)})
 
+    @app.exception_handler(KeyError)
+    async def _key_error(_request, exc: KeyError):
+        return JSONResponse(status_code=404, content={"error": str(exc)})
+
     @app.get("/api/state")
     def state():
         return ctl.snapshot()
@@ -112,16 +132,104 @@ def create_app() -> FastAPI:
     def events(since: int = 0):
         return {"events": ctl.events_since(since)}
 
-    @app.post("/api/scan")
-    def scan(body: ScanBody):
-        # Runs in the background; the UI polls /api/state → scan for progress.
-        folder = (body.folder or ctl.cfg.get("vod_folder") or "").strip()
+    # -------------------------------------------------------------- queues
+    @app.post("/api/queues")
+    def queues_create(body: CreateQueueBody):
+        return ctl.create_queue(body.name, body.vod_folder, body.account_id)
+
+    @app.patch("/api/queues/{queue_id}")
+    def queues_update(queue_id: str, patch: dict):
+        return ctl.update_queue(queue_id, patch)
+
+    @app.delete("/api/queues/{queue_id}")
+    def queues_delete(queue_id: str):
+        ctl.remove_queue(queue_id)
+        return {"ok": True}
+
+    @app.post("/api/queues/reorder")
+    def queues_reorder(body: ReorderBody):
+        ctl.reorder_queues(body.order)
+        return {"ok": True}
+
+    @app.post("/api/queues/{queue_id}/scan")
+    def q_scan(queue_id: str, body: ScanBody):
+        folder = (body.folder or ctl.get_queue(queue_id).vod_folder or "").strip()
         if folder and not Path(folder).is_dir():
             raise HTTPException(status_code=400,
                                 detail=f"folder does not exist: {folder}")
-        ctl.scan_async(body.folder)
+        ctl.scan_async(queue_id, body.folder)
         return {"started": True}
 
+    @app.patch("/api/queues/{queue_id}/meta/{key}")
+    def q_meta(queue_id: str, key: str, body: MetaBody):
+        try:
+            ctl.update_meta(queue_id, key, body.model_dump(exclude_none=True))
+        except KeyError:
+            raise HTTPException(status_code=404, detail="unknown vod")
+        return {"ok": True}
+
+    @app.post("/api/queues/{queue_id}/bulk")
+    def q_bulk(queue_id: str, body: BulkBody):
+        return ctl.bulk(queue_id, body.action, body.keys, body.value)
+
+    @app.post("/api/queues/{queue_id}/queue/start")
+    def q_start(queue_id: str, body: dict | None = None):
+        started = ctl.start_uploads(queue_id, force=bool((body or {}).get("force")))
+        return {"ok": True, "started": started}
+
+    @app.post("/api/queues/{queue_id}/queue/retry_failed")
+    def q_retry(queue_id: str):
+        return {"count": ctl.retry_failed(queue_id)}
+
+    @app.post("/api/queues/{queue_id}/queue/pause")
+    def q_pause(queue_id: str):
+        ctl.pause_uploads(queue_id)
+        return {"ok": True}
+
+    @app.post("/api/queues/{queue_id}/queue/cancel")
+    def q_cancel(queue_id: str):
+        ctl.cancel_current(queue_id)
+        return {"ok": True}
+
+    @app.post("/api/queues/{queue_id}/queue/remove")
+    def q_remove(queue_id: str, body: KeysBody):
+        ctl.remove_from_queue(queue_id, body.keys)
+        return {"ok": True}
+
+    @app.post("/api/queues/{queue_id}/queue/move")
+    def q_move(queue_id: str, body: MoveBody):
+        ctl.move_in_queue(queue_id, body.key, body.delta)
+        return {"ok": True}
+
+    @app.post("/api/queues/{queue_id}/queue/clear_finished")
+    def q_clear(queue_id: str):
+        ctl.clear_finished(queue_id)
+        return {"ok": True}
+
+    @app.get("/api/queues/{queue_id}/history")
+    def q_history(queue_id: str):
+        return {"history": ctl.history(queue_id),
+                "after_upload": ctl.get_queue(queue_id).setting("after_upload", "keep")}
+
+    @app.post("/api/queues/{queue_id}/automation/run")
+    def q_automation_run(queue_id: str):
+        ctl.automation_run(queue_id)
+        return {"ok": True}
+
+    @app.get("/api/queues/{queue_id}/video/{key}/stream")
+    def q_video_stream(queue_id: str, key: str):
+        """Serve the local video file for the in-browser preview player
+        (FileResponse handles HTTP Range, so seeking works)."""
+        vod = ctl.get_vod(queue_id, key)
+        if vod is None or vod.video_path is None or not vod.video_path.exists():
+            raise HTTPException(status_code=404, detail="video file not found")
+        suffix = vod.video_path.suffix.lower()
+        media = {"mp4": "video/mp4", ".mp4": "video/mp4",
+                 ".mkv": "video/x-matroska", ".ts": "video/mp2t"}.get(
+            suffix, "application/octet-stream")
+        return FileResponse(vod.video_path, media_type=media)
+
+    # ------------------------------------------------------------- settings
     @app.post("/api/settings")
     def settings(patch: dict):
         ctl.update_settings(patch)
@@ -132,69 +240,64 @@ def create_app() -> FastAPI:
         return {"message": ctl.lsdvr_test(str(body.get("url", "")).strip(),
                                           str(body.get("password", "")))}
 
-    @app.patch("/api/meta/{key}")
-    def meta(key: str, body: MetaBody):
-        try:
-            ctl.update_meta(key, body.model_dump(exclude_none=True))
-        except KeyError:
-            raise HTTPException(status_code=404, detail="unknown vod")
+    # ----------------------------------------------------------- yt manager
+    # Account-scoped (not queue-scoped) — browsing an already-signed-in
+    # channel's existing videos is independent of any one upload queue.
+    @app.get("/api/yt/videos")
+    def yt_videos(account_id: str):
+        return {"videos": ctl.yt_list(account_id)}
+
+    @app.get("/api/yt/video/{video_id}")
+    def yt_video(video_id: str, account_id: str):
+        return ctl.yt_video(account_id, video_id)
+
+    @app.patch("/api/yt/video/{video_id}")
+    def yt_video_update(video_id: str, account_id: str, body: dict):
+        ctl.yt_update(account_id, video_id, body)
         return {"ok": True}
 
-    @app.post("/api/bulk")
-    def bulk(body: BulkBody):
-        return ctl.bulk(body.action, body.keys, body.value)
+    @app.get("/api/yt/video/{video_id}/playlists")
+    def yt_video_playlists(video_id: str, account_id: str):
+        return {"playlists": ctl.yt_video_playlists(account_id, video_id)}
 
-    @app.post("/api/queue/start")
-    def queue_start(body: dict | None = None):
-        ctl.start_uploads(force=bool((body or {}).get("force")))
+    @app.post("/api/yt/video/{video_id}/playlists")
+    def yt_video_playlist_add(video_id: str, account_id: str, body: dict):
+        ctl.yt_playlist_add(account_id, video_id, str(body.get("playlist_id", "")))
         return {"ok": True}
 
-    @app.post("/api/queue/retry_failed")
-    def queue_retry():
-        return {"count": ctl.retry_failed()}
+    # Account-scoped (not queue-scoped) — a channel's playlist list is
+    # independent of which queue uploads to it. A *queue's* own "always add
+    # to playlist X" rule lives in that queue's settings instead.
+    @app.get("/api/playlists")
+    def playlists_list(account_id: str):
+        return {"playlists": ctl.playlists_list(account_id)}
 
-    @app.post("/api/queue/pause")
-    def queue_pause():
-        ctl.pause_uploads()
+    @app.post("/api/playlists")
+    def playlists_create(account_id: str, body: PlaylistBody):
+        ctl.playlists_create(account_id, body.title, body.privacy)
         return {"ok": True}
 
-    @app.post("/api/queue/cancel")
-    def queue_cancel():
-        ctl.cancel_current()
+    @app.post("/api/yt/playlist_item/remove")
+    def yt_playlist_item_remove(body: dict):
+        ctl.yt_playlist_remove(str(body.get("account_id", "")),
+                               str(body.get("item_id", "")))
         return {"ok": True}
 
-    @app.post("/api/queue/remove")
-    def queue_remove(body: KeysBody):
-        ctl.remove_from_queue(body.keys)
-        return {"ok": True}
+    @app.post("/api/yt/bulk")
+    def yt_bulk(body: dict):
+        return ctl.yt_bulk(str(body.get("account_id", "")),
+                           str(body.get("action", "")),
+                           list(body.get("keys", [])),
+                           str(body.get("value", "")))
 
-    @app.post("/api/queue/move")
-    def queue_move(body: MoveBody):
-        ctl.move_in_queue(body.key, body.delta)
-        return {"ok": True}
-
-    @app.post("/api/queue/clear_finished")
-    def queue_clear():
-        ctl.clear_finished()
-        return {"ok": True}
-
-    @app.get("/api/history")
-    def history():
-        return {"history": ctl.history(),
-                "after_upload": ctl.cfg.get("after_upload", "keep")}
-
+    # ----------------------------------------------------------------- auth
     @app.post("/api/auth/start")
     def auth_start():
         return ctl.start_sign_in()
 
-    @app.post("/api/auth/signout")
-    def auth_signout():
-        ctl.sign_out()
-        return {"ok": True}
-
-    @app.post("/api/auth/switch")
-    def auth_switch(body: dict):
-        ctl.switch_account(str(body.get("id", "")))
+    @app.post("/api/auth/remove")
+    def auth_remove(body: dict):
+        ctl.remove_account(str(body.get("id", "")))
         return {"ok": True}
 
     @app.post("/api/auth/secret")
@@ -225,66 +328,6 @@ def create_app() -> FastAPI:
                 encoding="utf-8")}
         except OSError:
             return {"changelog": ""}
-
-    # ------------------------------------------------------------ yt manager
-    @app.get("/api/yt/videos")
-    def yt_videos():
-        return {"videos": ctl.yt_list()}
-
-    @app.get("/api/yt/video/{video_id}")
-    def yt_video(video_id: str):
-        return ctl.yt_video(video_id)
-
-    @app.patch("/api/yt/video/{video_id}")
-    def yt_video_update(video_id: str, body: dict):
-        ctl.yt_update(video_id, body)
-        return {"ok": True}
-
-    @app.get("/api/yt/video/{video_id}/playlists")
-    def yt_video_playlists(video_id: str):
-        return {"playlists": ctl.yt_video_playlists(video_id)}
-
-    @app.post("/api/yt/video/{video_id}/playlists")
-    def yt_video_playlist_add(video_id: str, body: dict):
-        ctl.yt_playlist_add(video_id, str(body.get("playlist_id", "")))
-        return {"ok": True}
-
-    @app.post("/api/yt/playlist_item/remove")
-    def yt_playlist_item_remove(body: dict):
-        ctl.yt_playlist_remove(str(body.get("item_id", "")))
-        return {"ok": True}
-
-    @app.post("/api/yt/bulk")
-    def yt_bulk(body: BulkBody):
-        return ctl.yt_bulk(body.action, body.keys, body.value)
-
-    @app.post("/api/playlists/refresh")
-    def playlists_refresh():
-        ctl.refresh_playlists()
-        return {"ok": True}
-
-    @app.post("/api/playlists/create")
-    def playlists_create(body: PlaylistBody):
-        ctl.create_playlist(body.title, body.privacy)
-        return {"ok": True}
-
-    @app.post("/api/automation/run")
-    def automation_run():
-        ctl.auto_cycle()
-        return {"ok": True}
-
-    @app.get("/api/video/{key}/stream")
-    def video_stream(key: str):
-        """Serve the local video file for the in-browser preview player
-        (FileResponse handles HTTP Range, so seeking works)."""
-        vod = ctl.vods.get(key)
-        if vod is None or vod.video_path is None or not vod.video_path.exists():
-            raise HTTPException(status_code=404, detail="video file not found")
-        suffix = vod.video_path.suffix.lower()
-        media = {"mp4": "video/mp4", ".mp4": "video/mp4",
-                 ".mkv": "video/x-matroska", ".ts": "video/mp2t"}.get(
-            suffix, "application/octet-stream")
-        return FileResponse(vod.video_path, media_type=media)
 
     @app.get("/")
     def index():

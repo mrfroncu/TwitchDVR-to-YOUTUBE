@@ -221,8 +221,27 @@ tr.hist-problem { background: rgba(240, 90, 90, .07); }
 }
 @keyframes slide-in { from { transform: translateX(30px); opacity: 0; } }
 .editor-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.editor.editor-wide { width: min(680px, 92vw); }
 .field-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 10px 0; }
 .switch-row { display: flex; gap: 10px; align-items: center; margin: 10px 0; cursor: pointer; }
+
+/* --------------------------------------------------------- queue picker */
+.queue-picker {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 18px;
+}
+.queue-picker select#queue-select { max-width: 320px; }
+.queue-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+.queue-tab {
+  background: var(--card); border: 1px solid var(--border); color: var(--muted);
+  font: inherit; padding: 7px 14px; border-radius: 10px; cursor: pointer;
+  display: flex; align-items: center; gap: 6px;
+}
+.queue-tab:hover { color: var(--fg); }
+.queue-tab.active { background: #1e2534; color: var(--fg); font-weight: 600;
+  border-color: var(--accent); }
+.queue-tab .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+.queue-tab .dot.on { background: var(--ok); }
+.queue-tab .dot.cooldown { background: #f7cf7a; }
 
 /* -------------------------------------------------------- device code */
 .device-code { margin-top: 14px; padding: 16px; border-radius: 12px;

@@ -13,6 +13,9 @@ services:
       # Your LiveStreamDVR VOD library (the folder that contains the
       # per-stream subfolders). Needs write access if you enable
       # delete-after-upload.
+      # Multiple queues (Queues tab) each point at their own folder — either
+      # a subfolder under the one mount below, or extra `- host:container`
+      # lines here for separate volumes, each used as one queue's folder.
       - /path/to/your/vods:/vods
     environment:
       - TZ=Europe/Warsaw

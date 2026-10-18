@@ -1,12 +1,18 @@
 "use strict";
 
 let S = null;                 // last /api/state snapshot
-let checked = new Set();      // checked vod keys
+let activeQueueId = null;     // which configured queue the Videos/Queue/
+                               // Automation views currently show
+let browseAccountId = "";     // which channel Playlists/My YouTube browse
+let checked = new Set();      // checked vod keys (within the active queue)
 let lastSeq = 0;              // event log cursor
 let editorKey = null;
 let lastVodsJson = "", lastQueueJson = "", lastPlaylistsJson = "";
 
 const el = (id) => document.getElementById(id);
+
+try { activeQueueId = localStorage.getItem("dvr2yt_active_queue") || null; }
+catch (e) { /* private window / blocked storage — fine, just no memory */ }
 
 /* ------------------------------------------------------------ helpers */
 function fmtSize(n) {
@@ -30,7 +36,7 @@ function toast(msg, ok = false) {
   t._h = setTimeout(() => t.classList.add("hidden"), 4200);
 }
 async function api(path, body = null, method = null) {
-  const opts = { method: method || (body !== null ? "POST" : "POST"),
+  const opts = { method: method || "POST",
                  headers: { "Content-Type": "application/json" } };
   if (body !== null) opts.body = JSON.stringify(body);
   const resp = await fetch(path, opts);
@@ -43,6 +49,18 @@ async function api(path, body = null, method = null) {
   }
   refresh();
   return data;
+}
+// Calls a route scoped to the currently selected queue:
+// /api/queues/<activeQueueId><suffix>
+function qapi(suffix, body = null, method = null) {
+  if (!activeQueueId) { toast("Pick a queue first."); return Promise.reject(new Error("no queue")); }
+  return api(`/api/queues/${encodeURIComponent(activeQueueId)}${suffix}`, body, method);
+}
+function activeQueue() { return (S && activeQueueId) ? S.queues[activeQueueId] : null; }
+function queueOrder() { return (S && S.queue_order) || []; }
+function accountTitle(id) {
+  const a = (S && S.accounts || []).find(a => a.id === id);
+  return a ? a.title : (id ? "(session expired)" : "(none)");
 }
 
 /* -------------------------------------------------------------- login */
@@ -67,18 +85,25 @@ async function doLogin() {
 }
 
 /* --------------------------------------------------------------- nav */
+const QUEUE_SCOPED_VIEWS = new Set(["videos", "queue", "history", "automation"]);
+function showView(name) {
+  document.querySelectorAll(".nav-btn").forEach(b =>
+    b.classList.toggle("active", b.dataset.view === name));
+  document.querySelectorAll(".view").forEach(v => v.classList.add("hidden"));
+  const view = el("view-" + name);
+  view.classList.remove("hidden", "anim");
+  void view.offsetWidth;          // restart the entry animation
+  view.classList.add("anim");
+  el("queue-picker").classList.toggle("hidden", !QUEUE_SCOPED_VIEWS.has(name));
+  el("no-queues-notice").classList.toggle(
+    "hidden", !(QUEUE_SCOPED_VIEWS.has(name) && queueOrder().length === 0));
+  if (name === "about") loadChangelog();
+  if (name === "history") loadHistory();
+  if (name === "playlists") loadPlaylists();
+  if (name === "myyt" && ytVideos.length === 0) loadYt();
+}
 document.querySelectorAll(".nav-btn").forEach(btn => {
-  btn.addEventListener("click", () => {
-    document.querySelectorAll(".nav-btn").forEach(b => b.classList.remove("active"));
-    btn.classList.add("active");
-    document.querySelectorAll(".view").forEach(v => v.classList.add("hidden"));
-    const view = el("view-" + btn.dataset.view);
-    view.classList.remove("hidden", "anim");
-    void view.offsetWidth;          // restart the entry animation
-    view.classList.add("anim");
-    if (btn.dataset.view === "about") loadChangelog();
-    if (btn.dataset.view === "history") loadHistory();
-  });
+  btn.addEventListener("click", () => showView(btn.dataset.view));
 });
 
 /* -------------------------------------------------------------- about */
@@ -153,12 +178,256 @@ function saveUiMode() {
   api("/api/settings", { ui_mode: el("set-ui-mode").value });
   toast("Interface saved — restart the app to apply.", true);
 }
+function saveQueueLayout() {
+  api("/api/settings", { queue_ui_layout: el("set-queue-layout").value });
+}
 async function applyUpdate() {
   if (!confirm(`Download v${S.update.version} and restart now?`)) return;
   try {
     await api("/api/update/apply");
     toast("Updating — the app will restart itself…", true);
   } catch (e) { /* toast shown */ }
+}
+
+/* ------------------------------------------------------- queue picker */
+function statusDotClass(q) {
+  if (q.uploading) return "on";
+  if (q.cooldown) return "cooldown";
+  return "";
+}
+function queueStatusText(q) {
+  if (q.uploading) return "uploading";
+  if (!q.enabled) return "disabled";
+  if (q.cooldown) return "cooldown until " + q.cooldown;
+  if (!q.signed_in) return "not signed in";
+  const pending = q.queue.filter(i => i.status === "queued").length;
+  return pending ? `${pending} pending` : "idle";
+}
+function renderQueuePicker() {
+  const order = queueOrder();
+  if (!activeQueueId || !S.queues[activeQueueId]) {
+    activeQueueId = order[0] || null;
+    try {
+      if (activeQueueId) localStorage.setItem("dvr2yt_active_queue", activeQueueId);
+    } catch (e) { /* ignore */ }
+  }
+  const layout = (S.cfg && S.cfg.queue_ui_layout) || "switcher";
+  el("queue-select").classList.toggle("hidden", layout !== "switcher");
+  el("queue-tabs").classList.toggle("hidden", layout !== "tabs");
+
+  if (layout === "switcher") {
+    const sel = el("queue-select");
+    if (document.activeElement !== sel) {
+      sel.innerHTML = "";
+      for (const id of order) {
+        const o = document.createElement("option");
+        o.value = id;
+        o.textContent = S.queues[id].name;
+        sel.appendChild(o);
+      }
+      if (activeQueueId) sel.value = activeQueueId;
+    }
+  } else {
+    const box = el("queue-tabs");
+    box.innerHTML = "";
+    for (const id of order) {
+      const q = S.queues[id];
+      const btn = document.createElement("button");
+      btn.className = "queue-tab" + (id === activeQueueId ? " active" : "");
+      btn.innerHTML = `<span class="dot ${statusDotClass(q)}"></span>${esc(q.name)}`;
+      btn.addEventListener("click", () => setActiveQueue(id));
+      box.appendChild(btn);
+    }
+  }
+  const q = activeQueue();
+  el("queue-picker-status").textContent = q ? queueStatusText(q) : "";
+}
+function setActiveQueue(id) {
+  if (id === activeQueueId) return;
+  activeQueueId = id || null;
+  try {
+    if (activeQueueId) localStorage.setItem("dvr2yt_active_queue", activeQueueId);
+  } catch (e) { /* ignore */ }
+  checked = new Set();
+  lastVodsJson = lastQueueJson = "";
+  renderQueuePicker();
+  renderVideos();
+  renderQueue();
+  renderCooldown();
+  renderScan();
+  renderAutomationStatus();
+  const name = (activeQueue() || {}).name || "";
+  el("videos-queue-name").textContent = name ? "— " + name : "";
+  el("queue-queue-name").textContent = name ? "— " + name : "";
+  el("auto-queue-name").textContent = name ? "— " + name : "";
+}
+
+/* ------------------------------------------------------- queues admin */
+function renderQueuesTable() {
+  const tbody = el("queues-table").querySelector("tbody");
+  tbody.innerHTML = "";
+  const order = queueOrder();
+  if (!order.length) {
+    tbody.innerHTML = `<tr><td colspan="7" class="empty">No queues yet — add one above.</td></tr>`;
+    return;
+  }
+  order.forEach((id, idx) => {
+    const q = S.queues[id];
+    const pending = q.queue.filter(i => i.status === "queued").length;
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td><input type="checkbox" ${q.enabled ? "checked" : ""} title="Enabled"></td>
+      <td>${esc(q.name)}</td>
+      <td class="mono" title="${esc(q.vod_folder)}">${esc(q.vod_folder)}</td>
+      <td>${esc(q.channel || accountTitle(q.account_id))}</td>
+      <td class="${q.cooldown ? "st-err" : q.uploading ? "st-info" : ""}">${esc(queueStatusText(q))}</td>
+      <td>${pending}</td>
+      <td class="field-row" style="margin:0;flex-wrap:nowrap">
+        <button class="btn btn-ghost sm" data-up ${idx === 0 ? "disabled" : ""}>▲</button>
+        <button class="btn btn-ghost sm" data-down ${idx === order.length - 1 ? "disabled" : ""}>▼</button>
+        <button class="btn btn-ghost sm" data-rm title="Remove">🗑</button>
+      </td>`;
+    tr.querySelector("[data-up]").addEventListener("click", (e) => {
+      e.stopPropagation(); moveQueueDef(idx, -1);
+    });
+    tr.querySelector("[data-down]").addEventListener("click", (e) => {
+      e.stopPropagation(); moveQueueDef(idx, 1);
+    });
+    tr.querySelector("[data-rm]").addEventListener("click", (e) => {
+      e.stopPropagation(); removeQueueDef(id, q.name);
+    });
+    tr.querySelector('input[type="checkbox"]').addEventListener("click", async (e) => {
+      e.stopPropagation();
+      await api(`/api/queues/${encodeURIComponent(id)}`, { enabled: e.target.checked }, "PATCH");
+    });
+    tr.addEventListener("click", () => openQueueEditor(id));
+    tbody.appendChild(tr);
+  });
+}
+async function moveQueueDef(idx, delta) {
+  const order = [...queueOrder()];
+  const j = idx + delta;
+  if (j < 0 || j >= order.length) return;
+  [order[idx], order[j]] = [order[j], order[idx]];
+  await api("/api/queues/reorder", { order });
+}
+async function removeQueueDef(id, name) {
+  if (!confirm(`Remove queue "${name}"? Its pending items and settings are deleted ` +
+               `(the local video files and anything already on YouTube are not).`)) return;
+  await api(`/api/queues/${encodeURIComponent(id)}`, null, "DELETE");
+  if (activeQueueId === id) { activeQueueId = null; }
+  toast("Queue removed.", true);
+}
+
+/* ------------------------------------------------------- queue editor */
+let qdefEditingId = null;
+function fillQueueAccountSelect(current) {
+  const sel = el("qd-account");
+  sel.innerHTML = '<option value="">(none yet)</option>';
+  for (const a of (S.accounts || [])) {
+    const o = document.createElement("option");
+    o.value = a.id;
+    o.textContent = a.title;
+    sel.appendChild(o);
+  }
+  sel.value = current || "";
+}
+function openQueueEditor(id) {
+  qdefEditingId = id;
+  const isNew = !id;
+  const q = id ? S.queues[id] : null;
+  const st = q ? q.settings : {};
+  el("qdef-editor-title").textContent = isNew ? "Add queue" : "Edit queue";
+  el("qdef-remove-btn").classList.toggle("hidden", isNew);
+  el("qd-name").value = q ? q.name : "";
+  el("qd-folder").value = q ? q.vod_folder : (S.vods_default || "");
+  fillQueueAccountSelect(q ? q.account_id : "");
+  el("qd-enabled").checked = q ? !!q.enabled : true;
+
+  el("qd-privacy").value = st.privacy || "private";
+  el("qd-category").value = String(st.category_id || "20");
+  el("qd-template").value = st.title_template || "{title} | {streamer} VOD {date}";
+  el("qd-desc-template").value = st.description_template || "";
+  el("qd-notify").checked = !!st.notify_subscribers;
+  el("qd-kids").checked = !!st.made_for_kids;
+  el("qd-extra-tags").value = st.extra_tags || "";
+
+  el("qd-daily").value = st.daily_upload_limit ?? 0;
+  el("qd-uploads-24h").textContent = q ? q.uploads_last_24h : 0;
+  el("qd-speed").value = st.upload_speed_limit ?? 0;
+  el("qd-cooldown-h").value = st.cooldown_hours ?? 24.5;
+  el("qd-verify").checked = st.verify_uploads !== false;
+
+  el("qd-after").value = st.after_upload || "keep";
+  el("qd-lsdvr-delete").checked = !!st.lsdvr_delete;
+
+  el("qd-auto-scan").checked = !!st.auto_scan;
+  el("qd-auto-interval").value = st.auto_scan_interval_min ?? 10;
+  el("qd-auto-queue").checked = st.auto_queue !== false;
+  el("qd-auto-start").checked = st.auto_start !== false;
+  el("qd-auto-finalized").checked = st.auto_only_finalized !== false;
+
+  const mode = st.playlist_mode || "none";
+  const radio = document.querySelector(`input[name="qd-plmode"][value="${mode}"]`);
+  if (radio) radio.checked = true;
+  el("qd-pl-fixed-title").value = st.playlist_fixed_title || "";
+  el("qd-pl-template").value = st.playlist_template || "{streamer} VODs {year}";
+
+  el("qdef-editor").classList.remove("hidden");
+}
+function closeQueueEditor() {
+  qdefEditingId = null;
+  el("qdef-editor").classList.add("hidden");
+}
+async function saveQueueEditor() {
+  const settings = {
+    privacy: el("qd-privacy").value,
+    category_id: el("qd-category").value,
+    title_template: el("qd-template").value,
+    description_template: el("qd-desc-template").value,
+    notify_subscribers: el("qd-notify").checked,
+    made_for_kids: el("qd-kids").checked,
+    extra_tags: el("qd-extra-tags").value,
+    daily_upload_limit: parseInt(el("qd-daily").value) || 0,
+    upload_speed_limit: parseFloat(el("qd-speed").value) || 0,
+    cooldown_hours: parseFloat(el("qd-cooldown-h").value) || 24.5,
+    verify_uploads: el("qd-verify").checked,
+    after_upload: el("qd-after").value,
+    lsdvr_delete: el("qd-lsdvr-delete").checked,
+    auto_scan: el("qd-auto-scan").checked,
+    auto_scan_interval_min: parseInt(el("qd-auto-interval").value) || 10,
+    auto_queue: el("qd-auto-queue").checked,
+    auto_start: el("qd-auto-start").checked,
+    auto_only_finalized: el("qd-auto-finalized").checked,
+    playlist_mode: document.querySelector('input[name="qd-plmode"]:checked')?.value || "none",
+    playlist_fixed_title: el("qd-pl-fixed-title").value,
+    playlist_fixed_id: "",
+    playlist_template: el("qd-pl-template").value,
+  };
+  const name = el("qd-name").value.trim() || "Queue";
+  const folder = el("qd-folder").value.trim();
+  const accountId = el("qd-account").value;
+  try {
+    if (!qdefEditingId) {
+      const created = await api("/api/queues", { name, vod_folder: folder, account_id: accountId });
+      await api(`/api/queues/${encodeURIComponent(created.id)}`,
+                { ...settings, enabled: el("qd-enabled").checked }, "PATCH");
+      setActiveQueue(created.id);
+    } else {
+      await api(`/api/queues/${encodeURIComponent(qdefEditingId)}`, {
+        name, vod_folder: folder, account_id: accountId,
+        enabled: el("qd-enabled").checked, ...settings,
+      }, "PATCH");
+    }
+  } catch (e) { return; /* toast already shown */ }
+  toast("Queue saved.", true);
+  closeQueueEditor();
+}
+function removeQueueFromEditor() {
+  if (!qdefEditingId) return;
+  const name = el("qd-name").value || "this queue";
+  removeQueueDef(qdefEditingId, name);
+  closeQueueEditor();
 }
 
 /* ------------------------------------------------------------ videos */
@@ -169,11 +438,13 @@ function sortVods(col) {
   renderVideos();
 }
 function vodsSorted() {
-  if (!vodsSort.col) return S.vods;
+  const q = activeQueue();
+  if (!q) return [];
+  if (!vodsSort.col) return q.vods;
   const c = vodsSort.col;
   const key = (v) => (c === "size" || c === "duration" || c === "chapters")
     ? (v[c] || 0) : String(v[c] ?? "").toLowerCase();
-  return [...S.vods].sort((a, b) =>
+  return [...q.vods].sort((a, b) =>
     (key(a) > key(b) ? 1 : key(a) < key(b) ? -1 : 0) * (vodsSort.rev ? -1 : 1));
 }
 function statusClass(st) {
@@ -211,17 +482,22 @@ function esc(s) {
     ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
 }
 function checkAll(on) {
-  checked = on ? new Set(S.vods.map(v => v.key)) : new Set();
+  const q = activeQueue();
+  checked = on && q ? new Set(q.vods.map(v => v.key)) : new Set();
   renderVideos();
 }
 async function doScan() {
-  await api("/api/scan", { folder: el("folder-input").value || null });
+  await qapi("/scan", {});
   renderScan();   // show "scanning" immediately; polling keeps it updated
 }
 function renderScan() {
   const chip = el("scan-status");
-  const scan = (S && S.scan) || {};
+  const q = activeQueue();
+  const scan = (q && q.scan) || {};
   el("scan-btn").disabled = !!scan.active;
+  if (document.activeElement !== el("folder-input")) {
+    el("folder-input").value = q ? q.vod_folder : "";
+  }
   if (scan.active) {
     chip.textContent = scan.total
       ? `⏳ Scanning ${scan.done}/${scan.total}: ${String(scan.current).slice(0, 32)}`
@@ -250,11 +526,12 @@ async function bulk(action, value = "", confirmFirst = false) {
       `${action === "delete_local"
         ? "PERMANENTLY delete the WHOLE local folders (video + metadata) of"
         : "Apply to"} ${checked.size} checked video(s)?`)) return;
-  await api("/api/bulk", { action, keys: [...checked], value });
+  await qapi("/bulk", { action, keys: [...checked], value });
 }
 function renderOps() {
   const chip = el("op-status");
-  const op = (S && S.op) || {};
+  const q = activeQueue();
+  const op = (q && q.op) || {};
   if (op.active) {
     chip.textContent = `🗑 ${op.label}… ${op.done}/${op.total}`;
     chip.className = "chip chip-muted";
@@ -270,7 +547,8 @@ function renderOps() {
 
 /* ------------------------------------------------------------ editor */
 function playlistChoices() {
-  return ["(default)", "(none)", ...S.playlists.map(p => p.title)];
+  const q = activeQueue();
+  return ["(default)", "(none)", ...(q ? q.playlists.map(p => p.title) : [])];
 }
 function fillSelect(sel, values, current) {
   sel.innerHTML = "";
@@ -282,7 +560,8 @@ function fillSelect(sel, values, current) {
   if (current && values.includes(current)) sel.value = current;
 }
 function openEditor(key) {
-  const v = S.vods.find(x => x.key === key);
+  const q = activeQueue();
+  const v = q && q.vods.find(x => x.key === key);
   if (!v) return;
   editorKey = key;
   el("editor-title-label").textContent = v.stream_title.slice(0, 60);
@@ -301,80 +580,102 @@ function updateTitleCount() {
 el("ed-title").addEventListener("input", updateTitleCount);
 async function saveEditor(andQueue = false) {
   if (!editorKey) return;
-  await api(`/api/meta/${encodeURIComponent(editorKey)}`, {
+  await qapi(`/meta/${encodeURIComponent(editorKey)}`, {
     title: el("ed-title").value,
     tags: el("ed-tags").value,
     privacy: el("ed-privacy").value,
     playlist_choice: el("ed-playlist").value,
     description: el("ed-desc").value,
   }, "PATCH");
-  if (andQueue) await api("/api/bulk", { action: "queue", keys: [editorKey], value: "" });
+  if (andQueue) await qapi("/bulk", { action: "queue", keys: [editorKey], value: "" });
   toast(andQueue ? "Saved and queued." : "Saved.", true);
   if (andQueue) closeEditor();
 }
 async function resetEditor() {
   if (!editorKey) return;
-  await api("/api/bulk", { action: "reset_meta", keys: [editorKey], value: "" });
+  await qapi("/bulk", { action: "reset_meta", keys: [editorKey], value: "" });
   setTimeout(() => openEditor(editorKey), 300);
 }
 
 /* ------------------------------------------------------------- queue */
 async function startUploads() {
-  if (S && S.cooldown) {
-    if (!confirm(`Upload cooldown is active until ${S.cooldown} ` +
-                 `(${S.cooldown_reason}). Uploads resume automatically then.\n\n` +
-                 `Force-start now anyway?`)) return;
-    await api("/api/queue/start", { force: true });
+  const q = activeQueue();
+  if (!q) return;
+  if (S.quota_cooldown || q.cooldown) {
+    const reason = S.quota_cooldown
+      ? `the shared API-quota cooldown until ${S.quota_cooldown} (${S.quota_cooldown_reason})`
+      : `this queue's channel limit until ${q.cooldown} (${q.cooldown_reason})`;
+    if (!confirm(`Upload cooldown is active — ${reason}. Uploads resume ` +
+                 `automatically then.\n\nForce-start now anyway?`)) return;
+    await qapi("/queue/start", { force: true });
     return;
   }
-  await api("/api/queue/start", {});
+  await qapi("/queue/start", {});
 }
 function renderCooldown() {
+  const q = activeQueue();
   const banner = el("cooldown-banner");
-  if (S.cooldown) {
-    el("cooldown-until").textContent = S.cooldown;
-    el("cooldown-reason").textContent = S.cooldown_reason || "limit";
+  if (q && q.cooldown) {
+    el("cooldown-until").textContent = q.cooldown;
+    el("cooldown-reason").textContent = q.cooldown_reason || "limit";
     banner.classList.remove("hidden");
   } else {
     banner.classList.add("hidden");
   }
-  el("uploads-24h").textContent = S.uploads_last_24h ?? 0;
+  const quotaBanner = el("quota-cooldown-banner");
+  if (S.quota_cooldown) {
+    el("quota-cooldown-until").textContent = S.quota_cooldown;
+    el("quota-cooldown-reason").textContent = S.quota_cooldown_reason || "limit";
+    quotaBanner.classList.remove("hidden");
+  } else {
+    quotaBanner.classList.add("hidden");
+  }
+  const chip = el("quota-chip");
+  if (S.quota_cooldown) {
+    chip.textContent = "⏳ API quota cooldown until " + S.quota_cooldown;
+    chip.classList.remove("hidden");
+  } else {
+    chip.classList.add("hidden");
+  }
 }
 function renderQueue() {
   const box = el("queue-list");
+  const q = activeQueue();
   box.innerHTML = "";
-  if (!S.queue.length) {
+  if (!q || !q.queue.length) {
     box.innerHTML = `<div class="empty">Queue is empty — add videos from the Videos section.</div>`;
+    el("queue-badge").classList.add("hidden");
+    return;
   }
-  S.queue.forEach((q, idx) => {
+  q.queue.forEach((item, idx) => {
     const div = document.createElement("div");
     div.className = "q-item";
     div.innerHTML = `
       <div>${idx + 1}</div>
       <div style="min-width:0">
-        <div class="q-title">${esc(q.title)}</div>
-        <div class="q-detail">📁 ${esc(q.key)} · ${fmtSize(q.size)} · ${esc(q.privacy)} · ${esc(q.detail || "")}</div>
-        ${q.local ? `<div class="q-detail ${LOCAL_LABELS[q.local.state]?.[1] || ""}"
-          title="${esc(q.local.path || "")}">${localLabel(q.local)}</div>` : ""}
+        <div class="q-title">${esc(item.title)}</div>
+        <div class="q-detail">📁 ${esc(item.key)} · ${fmtSize(item.size)} · ${esc(item.privacy)} · ${esc(item.detail || "")}</div>
+        ${item.local ? `<div class="q-detail ${LOCAL_LABELS[item.local.state]?.[1] || ""}"
+          title="${esc(item.local.path || "")}">${localLabel(item.local)}</div>` : ""}
       </div>
-      <span class="q-status ${q.status}">${q.status}${q.status === "uploading" ? " " + q.progress + "%" : ""}</span>
+      <span class="q-status ${item.status}">${item.status}${item.status === "uploading" ? " " + item.progress + "%" : ""}</span>
       <div class="q-arrows">
-        ${q.video_id ? `<button class="btn btn-ghost sm" data-open title="Open on YouTube">🌐</button>` : ""}
+        ${item.video_id ? `<button class="btn btn-ghost sm" data-open title="Open on YouTube">🌐</button>` : ""}
         <button class="btn btn-ghost sm" data-d="-1">▲</button>
         <button class="btn btn-ghost sm" data-d="1">▼</button>
       </div>
       <button class="btn btn-ghost sm" data-rm>✕</button>
-      <div class="q-progress"><div style="width:${q.progress || 0}%"></div></div>`;
+      <div class="q-progress"><div style="width:${item.progress || 0}%"></div></div>`;
     const openBtn = div.querySelector("[data-open]");
     if (openBtn) openBtn.addEventListener("click", () =>
-      window.open("https://youtu.be/" + q.video_id));
+      window.open("https://youtu.be/" + item.video_id));
     div.querySelectorAll("[data-d]").forEach(b => b.addEventListener("click", () =>
-      api("/api/queue/move", { key: q.key, delta: parseInt(b.dataset.d) })));
+      qapi("/queue/move", { key: item.key, delta: parseInt(b.dataset.d) })));
     div.querySelector("[data-rm]").addEventListener("click", () =>
-      api("/api/queue/remove", { keys: [q.key] }));
+      qapi("/queue/remove", { keys: [item.key] }));
     box.appendChild(div);
   });
-  const pending = S.queue.filter(q => q.status === "queued").length;
+  const pending = q.queue.filter(i => i.status === "queued").length;
   const badge = el("queue-badge");
   badge.textContent = pending;
   badge.classList.toggle("hidden", pending === 0);
@@ -406,9 +707,10 @@ function localLabel(local) {
 }
 let histRows = [], historyAfter = "keep";
 async function loadHistory() {
+  if (!activeQueueId) return;
   el("hist-summary").innerHTML = `<span class="chip chip-muted">checking disk…</span>`;
   try {
-    const data = await api("/api/history", null, "GET");
+    const data = await qapi("/history", null, "GET");
     histRows = data.history || [];
     historyAfter = data.after_upload || "keep";
     renderHistory();
@@ -472,74 +774,90 @@ function renderHistory() {
 }
 
 /* -------------------------------------------------------- automation */
-function renderAutomation() {
-  if (document.activeElement && document.activeElement.id === "auto-interval") return;
-  el("auto-scan").checked = !!S.cfg.auto_scan;
-  el("auto-interval").value = S.cfg.auto_scan_interval_min;
-  el("auto-queue").checked = !!S.cfg.auto_queue;
-  el("auto-start").checked = !!S.cfg.auto_start;
-  el("auto-finalized").checked = !!S.cfg.auto_only_finalized;
-  el("auto-status").textContent = S.cfg.auto_scan ? S.auto_status : "off";
-}
-function saveAutomation() {
-  api("/api/settings", {
-    auto_scan: el("auto-scan").checked,
-    auto_scan_interval_min: parseInt(el("auto-interval").value) || 10,
-    auto_queue: el("auto-queue").checked,
-    auto_start: el("auto-start").checked,
-    auto_only_finalized: el("auto-finalized").checked,
-  });
+function renderAutomationStatus() {
+  const q = activeQueue();
+  el("auto-status").textContent = q
+    ? (q.settings.auto_scan ? q.auto_status : "off") : "";
 }
 
 /* --------------------------------------------------------- playlists */
+function renderAccountSelectors() {
+  if (!browseAccountId) {
+    const aq = activeQueue();
+    browseAccountId = (aq && aq.account_id) || (S.accounts[0] && S.accounts[0].id) || "";
+  }
+  for (const id of ["browse-account-playlists", "browse-account-myyt"]) {
+    const sel = el(id);
+    if (document.activeElement === sel) continue;
+    sel.innerHTML = "";
+    for (const a of (S.accounts || [])) {
+      const o = document.createElement("option");
+      o.value = a.id;
+      o.textContent = a.title;
+      sel.appendChild(o);
+    }
+    if (browseAccountId) sel.value = browseAccountId;
+  }
+}
+function setBrowseAccount(id) {
+  if (id === browseAccountId) return;
+  browseAccountId = id;
+  for (const selId of ["browse-account-playlists", "browse-account-myyt"]) {
+    el(selId).value = id;
+  }
+  playlistsLoaded = false;
+  ytVideos = [];
+  loadPlaylists();
+  loadYt();
+}
+let playlistsCache = [], playlistsLoaded = false;
+async function loadPlaylists() {
+  if (!browseAccountId) return;
+  try {
+    const data = await api(`/api/playlists?account_id=${encodeURIComponent(browseAccountId)}`,
+                           null, "GET");
+    playlistsCache = data.playlists || [];
+    playlistsLoaded = true;
+    renderPlaylists();
+  } catch (e) { /* toast already shown */ }
+}
 function renderPlaylists() {
   const tbody = el("playlists-table").querySelector("tbody");
   tbody.innerHTML = "";
-  for (const p of S.playlists) {
+  for (const p of playlistsCache) {
     const tr = document.createElement("tr");
     tr.innerHTML = `<td>${esc(p.title)}</td><td>${p.count}</td>
       <td>${esc(p.privacy)}</td><td class="muted">${esc(p.id)}</td>`;
     tbody.appendChild(tr);
   }
+  const q = activeQueue();
   fillSelect(el("bulk-playlist"), playlistChoices(), el("bulk-playlist").value);
-  const fixedSel = el("pl-fixed");
-  if (document.activeElement !== fixedSel) {
-    fillSelect(fixedSel, S.playlists.map(p => p.title), S.cfg.playlist_fixed_title);
-  }
-  const radio = document.querySelector(`input[name="plmode"][value="${S.cfg.playlist_mode}"]`);
-  if (radio && !radio.checked) radio.checked = true;
-  if (document.activeElement !== el("pl-template")) {
-    el("pl-template").value = S.cfg.playlist_template || "";
-  }
-}
-function savePlaylistRule() {
-  const mode = document.querySelector('input[name="plmode"]:checked')?.value || "none";
-  const fixedTitle = el("pl-fixed").value;
-  const fixed = S.playlists.find(p => p.title === fixedTitle);
-  api("/api/settings", {
-    playlist_mode: mode,
-    playlist_fixed_title: fixedTitle,
-    playlist_fixed_id: fixed ? fixed.id : S.cfg.playlist_fixed_id,
-    playlist_template: el("pl-template").value,
-  });
+  fillSelect(el("yt-bulk-playlist"), q ? q.playlists.map(p => p.title) : [],
+             el("yt-bulk-playlist").value);
+  fillSelect(el("yt-add-playlist"), q ? q.playlists.map(p => p.title) : [],
+             el("yt-add-playlist").value);
 }
 async function createPlaylist() {
   const title = el("new-pl-title").value.trim();
   if (!title) return;
   el("new-pl-title").value = "";
-  await api("/api/playlists/create", { title, privacy: el("new-pl-privacy").value });
+  await api(`/api/playlists?account_id=${encodeURIComponent(browseAccountId)}`,
+            { title, privacy: el("new-pl-privacy").value });
+  loadPlaylists();
 }
 
 /* ------------------------------------------------------ video preview */
 function openVideoModal(key) {
-  if (!key) return;
-  const v = S.vods.find(x => x.key === key);
+  if (!key || !activeQueueId) return;
+  const q = activeQueue();
+  const v = q && q.vods.find(x => x.key === key);
   if (!v) return;
   if ((v.problems || []).some(p => p.includes(".ts"))) {
     toast("Raw .ts captures may not play in the browser — use a local player.");
   }
   el("video-modal-title").textContent = v.stream_title || key;
-  el("video-player").src = `/api/video/${encodeURIComponent(key)}/stream`;
+  el("video-player").src =
+    `/api/queues/${encodeURIComponent(activeQueueId)}/video/${encodeURIComponent(key)}/stream`;
   el("video-modal").classList.remove("hidden");
   el("video-player").play().catch(() => {});
 }
@@ -565,9 +883,11 @@ let ytEditorId = null;
 let ytMemberships = [];
 
 async function loadYt() {
+  if (!browseAccountId) return;
   el("yt-count").textContent = "loading…";
   try {
-    const data = await api("/api/yt/videos", null, "GET");
+    const data = await api(`/api/yt/videos?account_id=${encodeURIComponent(browseAccountId)}`,
+                           null, "GET");
     ytVideos = data.videos || [];
     ytChecked = new Set([...ytChecked].filter(id => ytVideos.some(v => v.id === id)));
     el("yt-count").textContent = `${ytVideos.length} video(s)`;
@@ -611,9 +931,9 @@ function renderYt() {
     tr.addEventListener("dblclick", () => window.open("https://youtu.be/" + v.id));
     tbody.appendChild(tr);
   }
-  fillSelect(el("yt-bulk-playlist"), S.playlists.map(p => p.title),
+  fillSelect(el("yt-bulk-playlist"), playlistsCache.map(p => p.title),
              el("yt-bulk-playlist").value);
-  fillSelect(el("yt-add-playlist"), S.playlists.map(p => p.title),
+  fillSelect(el("yt-add-playlist"), playlistsCache.map(p => p.title),
              el("yt-add-playlist").value);
 }
 function ytCheckAll(on) {
@@ -624,7 +944,7 @@ async function ytBulk(action) {
   if (!ytChecked.size) { toast("Nothing checked."); return; }
   let value = "";
   if (action === "playlist") {
-    const pl = S.playlists.find(p => p.title === el("yt-bulk-playlist").value);
+    const pl = playlistsCache.find(p => p.title === el("yt-bulk-playlist").value);
     if (!pl) { toast("Pick a playlist first."); return; }
     value = pl.id;
   }
@@ -632,13 +952,15 @@ async function ytBulk(action) {
   if (action === "delete" && !confirm(
       `PERMANENTLY delete ${ytChecked.size} video(s) from YouTube?\n` +
       `This cannot be undone!`)) return;
-  const res = await api("/api/yt/bulk", { action, keys: [...ytChecked], value });
+  const res = await api("/api/yt/bulk",
+    { account_id: browseAccountId, action, keys: [...ytChecked], value });
   toast(`Applied to ${res.ok}/${ytChecked.size} video(s).`, true);
   loadYt();
 }
 async function openYtEditor(id) {
   try {
-    const v = await api(`/api/yt/video/${encodeURIComponent(id)}`, null, "GET");
+    const v = await api(`/api/yt/video/${encodeURIComponent(id)}?account_id=${encodeURIComponent(browseAccountId)}`,
+                        null, "GET");
     ytEditorId = id;
     el("yt-ed-title").value = v.title;
     el("yt-ed-tags").value = (v.tags || []).join(", ");
@@ -663,7 +985,7 @@ el("yt-ed-title").addEventListener("input", () =>
   el("yt-title-count").textContent = `${el("yt-ed-title").value.length}/100`);
 async function saveYtEditor() {
   if (!ytEditorId) return;
-  await api(`/api/yt/video/${encodeURIComponent(ytEditorId)}`, {
+  await api(`/api/yt/video/${encodeURIComponent(ytEditorId)}?account_id=${encodeURIComponent(browseAccountId)}`, {
     title: el("yt-ed-title").value,
     tags: el("yt-ed-tags").value,
     privacy: el("yt-ed-privacy").value,
@@ -676,8 +998,9 @@ async function saveYtEditor() {
 async function ytCheckMemberships() {
   if (!ytEditorId) return;
   el("yt-memberships").innerHTML = `<span class="muted">checking…</span>`;
-  const data = await api(`/api/yt/video/${encodeURIComponent(ytEditorId)}/playlists`,
-                         null, "GET");
+  const data = await api(
+    `/api/yt/video/${encodeURIComponent(ytEditorId)}/playlists?account_id=${encodeURIComponent(browseAccountId)}`,
+    null, "GET");
   ytMemberships = data.playlists || [];
   const box = el("yt-memberships");
   box.innerHTML = ytMemberships.length ? ""
@@ -688,7 +1011,8 @@ async function ytCheckMemberships() {
     row.innerHTML = `<span>${esc(m.title)}</span>
       <button class="btn btn-ghost sm" title="Remove from playlist">✕</button>`;
     row.querySelector("button").addEventListener("click", async () => {
-      await api("/api/yt/playlist_item/remove", { item_id: m.item_id });
+      await api("/api/yt/playlist_item/remove",
+                { account_id: browseAccountId, item_id: m.item_id });
       ytCheckMemberships();
     });
     box.appendChild(row);
@@ -696,9 +1020,9 @@ async function ytCheckMemberships() {
 }
 async function ytAddToPlaylist() {
   if (!ytEditorId) return;
-  const pl = S.playlists.find(p => p.title === el("yt-add-playlist").value);
+  const pl = playlistsCache.find(p => p.title === el("yt-add-playlist").value);
   if (!pl) { toast("Pick a playlist first."); return; }
-  await api(`/api/yt/video/${encodeURIComponent(ytEditorId)}/playlists`,
+  await api(`/api/yt/video/${encodeURIComponent(ytEditorId)}/playlists?account_id=${encodeURIComponent(browseAccountId)}`,
             { playlist_id: pl.id });
   toast("Added to playlist.", true);
   ytCheckMemberships();
@@ -727,9 +1051,9 @@ function renderAuth() {
   const chip = el("channel-chip");
   const status = el("auth-status");
   if (a.status === "signed_in") {
-    chip.textContent = "▶ " + (a.channel || "connected");
+    chip.textContent = "▶ " + ((S.accounts || []).length) + " account(s) connected";
     chip.className = "chip";
-    status.textContent = "Connected" + (a.channel ? ": " + a.channel : "");
+    status.textContent = "Connected";
     status.className = "chip";
     el("device-code-box").classList.add("hidden");
   } else if (a.status === "pending_browser") {
@@ -754,20 +1078,23 @@ function renderAuth() {
     el("device-code-box").classList.add("hidden");
   }
 }
-function renderAccounts() {
-  const sel = el("account-select");
-  if (document.activeElement === sel) return;
-  sel.innerHTML = "";
+function renderAccountsTable() {
+  const tbody = el("accounts-table").querySelector("tbody");
+  tbody.innerHTML = "";
   for (const a of (S.accounts || [])) {
-    const o = document.createElement("option");
-    o.value = a.id;
-    o.textContent = a.title;
-    sel.appendChild(o);
+    const usedBy = queueOrder().map(id => S.queues[id])
+      .filter(q => q.account_id === a.id).map(q => q.name);
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${esc(a.title)}</td>
+      <td class="muted">${usedBy.length ? esc(usedBy.join(", ")) : "—"}</td>
+      <td><button class="btn btn-ghost sm" data-rm>Remove</button></td>`;
+    tr.querySelector("[data-rm]").addEventListener("click", async () => {
+      if (!confirm(`Remove the saved sign-in for "${a.title}"? Queues using it ` +
+                   `will show "not signed in" until you pick another account.`)) return;
+      await api("/api/auth/remove", { id: a.id });
+    });
+    tbody.appendChild(tr);
   }
-  if (S.active_account) sel.value = S.active_account;
-}
-async function switchAccount() {
-  await api("/api/auth/switch", { id: el("account-select").value });
 }
 async function connectYouTube() {
   const id = el("client-id").value.trim(), secret = el("client-secret").value.trim();
@@ -779,46 +1106,18 @@ async function connectYouTube() {
 
 /* ---------------------------------------------------------- settings */
 function renderSettings() {
-  if (["set-template", "client-id", "client-secret", "folder-input", "set-daily",
-       "set-desc-template", "set-speed", "set-cooldown-h", "set-extra-tags",
-       "set-lsdvr-url", "set-lsdvr-pass"]
+  if (["client-id", "client-secret", "set-lsdvr-url", "set-lsdvr-pass"]
       .includes(document.activeElement?.id)) return;
-  el("set-daily").value = S.cfg.daily_upload_limit ?? 0;
-  el("set-desc-template").value = S.cfg.description_template || "";
-  el("set-speed").value = S.cfg.upload_speed_limit ?? 0;
-  el("set-cooldown-h").value = S.cfg.cooldown_hours ?? 24.5;
-  el("set-verify").checked = S.cfg.verify_uploads !== false;
-  el("set-extra-tags").value = S.cfg.extra_tags || "";
-  el("set-privacy").value = S.cfg.privacy;
-  el("set-category").value = String(S.cfg.category_id || "20");
-  el("set-template").value = S.cfg.title_template;
-  el("set-notify").checked = !!S.cfg.notify_subscribers;
-  el("set-kids").checked = !!S.cfg.made_for_kids;
-  el("set-after").value = S.cfg.after_upload || "keep";
-  el("set-lsdvr-delete").checked = !!S.cfg.lsdvr_delete;
   el("set-lsdvr-url").value = S.cfg.lsdvr_url || "";
   el("set-lsdvr-pass").placeholder = S.has_lsdvr_password
     ? "saved — type to replace" : "panel password (empty if none)";
-  if (document.activeElement !== el("folder-input")) {
-    el("folder-input").value = S.cfg.vod_folder || "";
-  }
   if (!el("client-id").value && S.cfg.client_id) el("client-id").value = S.cfg.client_id;
+  if (document.activeElement !== el("set-queue-layout")) {
+    el("set-queue-layout").value = S.cfg.queue_ui_layout || "switcher";
+  }
 }
 function saveSettings() {
   api("/api/settings", {
-    privacy: el("set-privacy").value,
-    category_id: el("set-category").value,
-    title_template: el("set-template").value,
-    notify_subscribers: el("set-notify").checked,
-    made_for_kids: el("set-kids").checked,
-    after_upload: el("set-after").value,
-    daily_upload_limit: parseInt(el("set-daily").value) || 0,
-    description_template: el("set-desc-template").value,
-    upload_speed_limit: parseFloat(el("set-speed").value) || 0,
-    cooldown_hours: parseFloat(el("set-cooldown-h").value) || 24.5,
-    verify_uploads: el("set-verify").checked,
-    extra_tags: el("set-extra-tags").value,
-    lsdvr_delete: el("set-lsdvr-delete").checked,
     lsdvr_url: el("set-lsdvr-url").value.trim(),
   });
 }
@@ -875,19 +1174,30 @@ async function refresh() {
   } catch (e) { return; }
   el("version").textContent = "v" + S.version;
   renderAuth();
-  renderAccounts();
+  renderAccountsTable();
   renderDesktop();
+  renderSettings();
+  renderQueuePicker();
+  renderQueuesTable();
+  renderAccountSelectors();
+  if (!playlistsLoaded && browseAccountId) loadPlaylists();
+  const activeView = document.querySelector(".nav-btn.active")?.dataset.view || "videos";
+  el("no-queues-notice").classList.toggle(
+    "hidden", !(QUEUE_SCOPED_VIEWS.has(activeView) && queueOrder().length === 0));
   renderScan();
   renderOps();
   renderCooldown();
-  renderAutomation();
-  renderSettings();
-  const vodsJson = JSON.stringify(S.vods);
+  renderAutomationStatus();
+  const q = activeQueue();
+  const name = q ? "— " + q.name : "";
+  el("videos-queue-name").textContent = name;
+  el("queue-queue-name").textContent = name;
+  el("auto-queue-name").textContent = name;
+  const vodsJson = q ? JSON.stringify(q.vods) : "";
   if (vodsJson !== lastVodsJson) { lastVodsJson = vodsJson; renderVideos(); }
-  const queueJson = JSON.stringify(S.queue);
+  const queueJson = q ? JSON.stringify(q.queue) : "";
   if (queueJson !== lastQueueJson) { lastQueueJson = queueJson; renderQueue(); }
-  const plJson = JSON.stringify([S.playlists, S.cfg.playlist_mode,
-                                 S.cfg.playlist_fixed_title, S.cfg.playlist_template]);
+  const plJson = JSON.stringify(q ? [q.playlists, q.settings.playlist_mode] : []);
   if (plJson !== lastPlaylistsJson) { lastPlaylistsJson = plJson; renderPlaylists(); }
 }
 

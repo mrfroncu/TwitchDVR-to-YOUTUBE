@@ -24,12 +24,17 @@ def _parse(ts: str | None) -> datetime | None:
         return None
 
 
-def recent_upload_times(registry: dict) -> list[datetime]:
-    """Timestamps of successful uploads inside the rolling window, oldest first."""
+def recent_upload_times(registry: dict, queue_id: str | None = None) -> list[datetime]:
+    """Timestamps of successful uploads inside the rolling window, oldest
+    first. YouTube's channel upload limit is per-channel, so pass `queue_id`
+    to scope the count to one queue (one channel) rather than every queue
+    sharing the registry file."""
     now = datetime.now(timezone.utc)
     times = []
     for entry in registry.values():
         if entry.get("failed"):
+            continue
+        if queue_id is not None and entry.get("queue_id") != queue_id:
             continue
         dt = _parse(entry.get("uploaded_at"))
         if dt and now - dt < WINDOW:
@@ -37,13 +42,13 @@ def recent_upload_times(registry: dict) -> list[datetime]:
     return sorted(times)
 
 
-def count_recent(registry: dict) -> int:
-    return len(recent_upload_times(registry))
+def count_recent(registry: dict, queue_id: str | None = None) -> int:
+    return len(recent_upload_times(registry, queue_id))
 
 
-def next_slot(registry: dict, limit: int) -> datetime:
+def next_slot(registry: dict, limit: int, queue_id: str | None = None) -> datetime:
     """When the next upload becomes allowed under a daily limit."""
-    times = recent_upload_times(registry)
+    times = recent_upload_times(registry, queue_id)
     if limit <= 0 or len(times) < limit:
         return datetime.now(timezone.utc)
     return times[-limit] + WINDOW
@@ -121,17 +126,35 @@ def eta_for_queue(pending_count: int, remaining_today: int,
     return f"~{days} day(s)"
 
 
-def get_cooldown(cfg: dict) -> datetime | None:
-    """Active cooldown end time, or None (expired cooldowns read as None)."""
-    dt = _parse(cfg.get("cooldown_until"))
+def get_cooldown(state: dict) -> datetime | None:
+    """Active cooldown end time, or None (expired cooldowns read as None).
+
+    `state` is a per-queue runtime dict (queue_state_<id>.json) holding that
+    queue's own channel (uploadLimitExceeded) cooldown. For the shared
+    project-quota cooldown, see get_quota_cooldown below."""
+    dt = _parse(state.get("cooldown_until"))
     if dt and dt > datetime.now(timezone.utc):
         return dt
     return None
 
 
-def set_cooldown(cfg: dict, until: datetime | None, reason: str = "") -> None:
-    cfg["cooldown_until"] = until.isoformat() if until else ""
-    cfg["cooldown_reason"] = reason
+def set_cooldown(state: dict, until: datetime | None, reason: str = "") -> None:
+    state["cooldown_until"] = until.isoformat() if until else ""
+    state["cooldown_reason"] = reason
+
+
+def get_quota_cooldown(cfg: dict) -> datetime | None:
+    """Active *shared* API-quota cooldown (every queue waits for this one),
+    stored in the app-wide config rather than any one queue's state."""
+    dt = _parse(cfg.get("quota_cooldown_until"))
+    if dt and dt > datetime.now(timezone.utc):
+        return dt
+    return None
+
+
+def set_quota_cooldown(cfg: dict, until: datetime | None, reason: str = "") -> None:
+    cfg["quota_cooldown_until"] = until.isoformat() if until else ""
+    cfg["quota_cooldown_reason"] = reason
 
 
 def fmt_local(dt: datetime) -> str:

@@ -53,8 +53,15 @@ Twitch VOD recordings to YouTube — sequentially, with all the stream metadata 
   LiveStreamDVR is always permanent (it bypasses the Recycle Bin).
 - Modern Fluent-inspired UI with dark and light mode (Settings → Appearance), animated
   upload progress, and a theme-matched title bar — drawn natively, so it stays responsive
-- **Multiple channels**: add several YouTube accounts/brand channels and switch the active
-  one from a dropdown (Settings or the My YouTube tab); uploads go to the active channel
+- **Multiple independent queues**: run several upload pipelines side by side, each its own
+  VOD folder + YouTube channel, own templates/limits/automation and its own cooldown — one
+  channel hitting YouTube's upload limit doesn't block the others. Only one queue uploads
+  at a time; when the active one finishes, cools down or errors, the next ready queue takes
+  over automatically. A shared API-quota cooldown still pauses every queue at once (that
+  limit belongs to the Google Cloud project, not any one channel). Manage queues from the
+  **Queues** tab; pick a dropdown switcher or one tab per queue in Settings → Queue layout.
+- **Multiple channels**: add as many YouTube accounts/brand channels as you like (Settings)
+  and assign one to each queue
 - **My YouTube tab**: full manager for videos already on the channel — list with
   privacy/views/status, plus a complete per-video editor (title, description, tags,
   privacy, category saved straight to YouTube), playlist membership view with add/remove,
@@ -119,19 +126,21 @@ The app talks to the official YouTube Data API v3 and needs an OAuth client that
 python run.py
 ```
 
-- **Settings** tab → browse to your `client_secret_….json` → **Sign in with Google…**
+- **Settings** tab → browse to your `client_secret_….json` → **Add account…**
 - Your browser opens; the app listens on `http://127.0.0.1:<port>` for the redirect.
   The Google account chooser in the browser is where you pick the account **and the YouTube
-  channel** (brand/secondary channels show up in that list). To switch channels later:
-  Sign out → Sign in again.
+  channel** (brand/secondary channels show up in that list). Repeat to add more channels —
+  each is assigned to a queue, not switched globally.
 
 ### 4. Upload
 
-1. **Videos** tab → pick the folder that contains your VOD subfolders → **Scan**.
-2. Select a video to review/edit the generated title, description (chapters), tags and privacy.
+1. **Queues** tab → **Add queue** → pick its VOD folder and YouTube account.
+2. **Videos** tab (for that queue) → **Scan**, then select a video to review/edit the
+   generated title, description (chapters), tags and privacy.
 3. **Add selected to queue** (or **Add ALL new to queue**).
-4. **Queue & Progress** tab → **Start uploads**. Uploads run one at a time; you can pause after
-   the current file, cancel the current file, reorder or remove pending items.
+4. **Queue & Progress** tab → **Start uploads**. Uploads for that queue run one at a time;
+   you can pause after the current file, cancel it, reorder or remove pending items. A
+   second queue (different folder/channel) can be added the same way and runs independently.
 
 ## Expected folder layout
 
@@ -152,8 +161,9 @@ Status column) and can be uploaded — YouTube accepts MPEG-TS.
 ## Important YouTube API limitations
 
 - **Quota:** each upload costs **1600 units**; the default daily quota is **10 000 units**,
-  i.e. **~6 uploads per day**. The queue detects quota exhaustion and stops; the quota resets
-  at **midnight Pacific time**. You can request a quota increase in the Google Cloud console.
+  i.e. **~6 uploads per day** — shared by every queue, since it belongs to your Google Cloud
+  project, not any one channel. Hitting it pauses **all** queues at once; it resets at
+  **midnight Pacific time**. You can request a quota increase in the Google Cloud console.
 - **Unverified apps upload as private-locked:** until your OAuth app passes Google's
   verification/audit, videos uploaded through the API are **locked to Private** regardless of
   the privacy setting. For personal archiving this is usually fine (you can watch them while
@@ -163,11 +173,12 @@ Status column) and can be uploaded — YouTube accepts MPEG-TS.
 - While the consent screen is in *Testing* mode, refresh tokens expire after ~7 days —
   you'll just be asked to sign in again.
 - **Channel upload limit (`uploadLimitExceeded`)**: besides the API quota, YouTube limits
-  how many videos a channel may upload in a rolling ~24h window. When the app hits it,
-  the queue pauses with a **24.5h cooldown** and resumes automatically (desktop and web,
-  works with automation). You can also set **"Max uploads per 24h"** in Settings so the
-  app stops *before* triggering the error, and a **Retry failed** button re-queues
-  anything that already failed.
+  how many videos a channel may upload in a rolling ~24h window. This one is per channel,
+  so only the queue on that channel pauses — with a **24.5h cooldown**, resuming
+  automatically (desktop and web, works with automation) — while other queues on other
+  channels keep going. You can also set **"Max uploads per 24h"** per queue so it stops
+  *before* triggering the error, and a **Retry failed** button re-queues anything that
+  already failed.
 - **Videos longer than 15 minutes** require a verified YouTube account
   (<https://www.youtube.com/verify>) — otherwise YouTube rejects the video *after* the
   transfer finishes. The app's post-upload verification catches this and marks the video

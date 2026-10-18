@@ -19,6 +19,7 @@
     </div>
   </div>
   <nav>
+    <button class="nav-btn" data-view="queues">🗂️ <span>Queues</span></button>
     <button class="nav-btn active" data-view="videos">🎬 <span>Videos</span></button>
     <button class="nav-btn" data-view="queue">📤 <span>Queue</span> <em id="queue-badge" class="badge hidden"></em></button>
     <button class="nav-btn" data-view="history">🧾 <span>History</span></button>
@@ -29,6 +30,7 @@
     <button class="nav-btn" data-view="about">ℹ️ <span>About</span></button>
   </nav>
   <div class="sidebar-foot">
+    <div id="quota-chip" class="chip chip-warn hidden"></div>
     <div id="channel-chip" class="chip chip-muted">Not connected</div>
     <div class="version" id="version"></div>
   </div>
@@ -40,12 +42,160 @@
     <button class="btn btn-accent sm" onclick="applyUpdate()">⬇ Update &amp; restart</button>
     <button class="btn btn-ghost sm" onclick="el('update-banner').classList.add('hidden')">Later</button>
   </div>
-  <!-- ============================================================ VIDEOS -->
-  <section id="view-videos" class="view">
+
+  <!-- --------------------------------------------------- queue picker bar -->
+  <!-- Shown above Videos / Queue / Automation — picks which configured
+       queue (folder + channel + its own pacing) those views act on. Two
+       interchangeable widgets for the same job; Settings → "Queue layout"
+       picks which one renders. -->
+  <div id="queue-picker" class="queue-picker hidden">
+    <select id="queue-select" class="input hidden" onchange="setActiveQueue(this.value)"></select>
+    <div id="queue-tabs" class="queue-tabs hidden"></div>
+    <span id="queue-picker-status" class="chip chip-muted"></span>
+  </div>
+  <div id="no-queues-notice" class="card pad hidden">
+    <p>No upload queues yet. Create one on the <b>Queues</b> tab — each queue
+      is its own VOD folder + YouTube channel pair, with its own pace and
+      cooldown, independent of the others.</p>
+    <button class="btn btn-accent" onclick="showView('queues')">🗂️ Go to Queues</button>
+  </div>
+
+  <!-- ============================================================ QUEUES -->
+  <section id="view-queues" class="view hidden">
     <header class="view-head">
-      <h1>Videos</h1>
+      <h1>Queues</h1>
       <div class="toolbar">
-        <input id="folder-input" class="input grow" placeholder="/vods" spellcheck="false">
+        <button class="btn btn-accent" onclick="openQueueEditor(null)">➕ Add queue</button>
+      </div>
+    </header>
+    <div class="card">
+      <div class="table-wrap">
+        <table id="queues-table">
+          <thead><tr>
+            <th></th><th>Name</th><th>Folder</th><th>Channel</th>
+            <th>Status</th><th>Pending</th><th></th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+    <p class="muted">Each queue uploads one at a time overall — when the
+      active queue finishes, cools down (channel limit) or errors, the next
+      ready queue takes over automatically. A shared YouTube API-quota
+      cooldown (shown above, when active) pauses every queue at once.</p>
+  </section>
+
+  <!-- ------------------------------------------------------ queue editor -->
+  <div id="qdef-editor" class="editor editor-wide hidden">
+    <div class="editor-head">
+      <h2 id="qdef-editor-title">Add queue</h2>
+      <button class="btn btn-ghost sm" onclick="closeQueueEditor()">✕</button>
+    </div>
+    <label>Name</label>
+    <input id="qd-name" class="input" placeholder="e.g. Main channel">
+    <label>VOD folder</label>
+    <input id="qd-folder" class="input" placeholder="/vods/channel-a" spellcheck="false">
+    <div class="field-row">
+      <div class="grow"><label>YouTube account</label>
+        <select id="qd-account" class="input"></select></div>
+      <label class="switch-row"><input type="checkbox" id="qd-enabled">
+        <span>Enabled</span></label>
+    </div>
+
+    <h2 style="margin-top:18px">Upload defaults</h2>
+    <div class="field-row">
+      <div class="grow"><label>Privacy</label>
+        <select id="qd-privacy" class="input">
+          <option>private</option><option>unlisted</option><option>public</option>
+        </select></div>
+      <div class="grow"><label>Category</label>
+        <select id="qd-category" class="input">
+          <option value="20">Gaming</option><option value="24">Entertainment</option>
+          <option value="22">People &amp; Blogs</option>
+          <option value="28">Science &amp; Technology</option>
+        </select></div>
+    </div>
+    <label>Title template</label>
+    <input id="qd-template" class="input">
+    <p class="muted">Placeholders: {title} {streamer} {login} {date} {game} {games}</p>
+    <label>Description template (empty = built-in default)</label>
+    <textarea id="qd-desc-template" class="input" rows="6" spellcheck="false"></textarea>
+    <label class="switch-row"><input type="checkbox" id="qd-notify">
+      <span>Notify subscribers on upload</span></label>
+    <label class="switch-row"><input type="checkbox" id="qd-kids">
+      <span>Mark as "made for kids"</span></label>
+    <div class="field-row">
+      <span>Extra tags (always added)</span>
+      <input id="qd-extra-tags" class="input grow">
+    </div>
+
+    <h2 style="margin-top:18px">Rate limiting</h2>
+    <div class="field-row">
+      <span>Max uploads per 24h</span>
+      <input id="qd-daily" class="input xs" type="number" min="0" max="500">
+      <span class="muted">0 = no limit — used <span id="qd-uploads-24h">0</span> in the last 24h</span>
+    </div>
+    <div class="field-row">
+      <span>Upload speed limit (MB/s)</span>
+      <input id="qd-speed" class="input xs" type="number" min="0" step="0.5">
+      <span>Retry wait after channel limit (hours)</span>
+      <input id="qd-cooldown-h" class="input xs" type="number" min="0.5" step="0.5">
+    </div>
+    <label class="switch-row"><input type="checkbox" id="qd-verify">
+      <span>Verify each upload on YouTube after it finishes</span></label>
+
+    <h2 style="margin-top:18px">After a verified upload</h2>
+    <select id="qd-after" class="input">
+      <option value="keep">Keep local files</option>
+      <option value="trash_video">Delete the video file (permanent!)</option>
+      <option value="trash_folder">Delete the whole VOD folder (permanent!)</option>
+    </select>
+    <label class="switch-row"><input type="checkbox" id="qd-lsdvr-delete">
+      <span>Delete through the LiveStreamDVR API instead of deleting files directly
+      (LiveStreamDVR connection is set up once in Settings)</span></label>
+    <p class="muted">Server mode has no recycle bin — deletion is permanent and only
+      ever happens after YouTube confirms the video exists.</p>
+
+    <h2 style="margin-top:18px">Automation</h2>
+    <label class="switch-row"><input type="checkbox" id="qd-auto-scan">
+      <span>Watch this folder and rescan automatically</span></label>
+    <div class="field-row">
+      <span>Scan every</span>
+      <input id="qd-auto-interval" class="input xs" type="number" min="1" max="1440">
+      <span>minutes</span>
+    </div>
+    <label class="switch-row"><input type="checkbox" id="qd-auto-queue">
+      <span>Automatically queue new ready VODs</span></label>
+    <label class="switch-row"><input type="checkbox" id="qd-auto-start">
+      <span>Automatically start uploading when the queue has items</span></label>
+    <label class="switch-row"><input type="checkbox" id="qd-auto-finalized">
+      <span>Skip raw .ts / not-finalized captures</span></label>
+
+    <h2 style="margin-top:18px">Playlist rule</h2>
+    <label class="switch-row"><input type="radio" name="qd-plmode" value="none">
+      <span>Don't add uploads to any playlist</span></label>
+    <label class="switch-row"><input type="radio" name="qd-plmode" value="fixed">
+      <span>Always add to:</span>
+      <input id="qd-pl-fixed-title" class="input" placeholder="playlist title"></label>
+    <label class="switch-row"><input type="radio" name="qd-plmode" value="template">
+      <span>Auto-create by name:</span>
+      <input id="qd-pl-template" class="input grow" placeholder="{streamer} VODs {year}"></label>
+    <p class="muted">Placeholders: {streamer} {login} {game} {games} {year} {month}
+      {date} {title}.</p>
+
+    <div class="field-row" style="margin-top:18px">
+      <button class="btn btn-accent" onclick="saveQueueEditor()">💾 Save</button>
+      <button id="qdef-remove-btn" class="btn btn-danger" onclick="removeQueueFromEditor()">🗑 Remove queue</button>
+    </div>
+  </div>
+
+  <!-- ============================================================ VIDEOS -->
+  <section id="view-videos" class="view hidden">
+    <header class="view-head">
+      <h1>Videos <span id="videos-queue-name" class="muted"></span></h1>
+      <div class="toolbar">
+        <input id="folder-input" class="input grow" placeholder="/vods" spellcheck="false" readonly
+               title="Edit the folder from the Queues tab">
         <button id="scan-btn" class="btn btn-accent" onclick="doScan()">🔍 Scan</button>
         <span id="scan-status" class="chip chip-muted hidden"></span>
       </div>
@@ -90,18 +240,24 @@
   <!-- ============================================================= QUEUE -->
   <section id="view-queue" class="view hidden">
     <header class="view-head">
-      <h1>Queue &amp; Progress</h1>
+      <h1>Queue &amp; Progress <span id="queue-queue-name" class="muted"></span></h1>
       <div class="toolbar">
         <button id="btn-start" class="btn btn-accent" onclick="startUploads()">▶ Start uploads</button>
-        <button class="btn" onclick="api('/api/queue/pause')">⏸ Pause after current</button>
-        <button class="btn" onclick="api('/api/queue/cancel')">✖ Cancel current</button>
-        <button class="btn" onclick="api('/api/queue/retry_failed')">↻ Retry failed</button>
-        <button class="btn btn-ghost" onclick="api('/api/queue/clear_finished')">Clear finished</button>
+        <button class="btn" onclick="qapi('/queue/pause')">⏸ Pause after current</button>
+        <button class="btn" onclick="qapi('/queue/cancel')">✖ Cancel current</button>
+        <button class="btn" onclick="qapi('/queue/retry_failed')">↻ Retry failed</button>
+        <button class="btn btn-ghost" onclick="qapi('/queue/clear_finished')">Clear finished</button>
       </div>
     </header>
+    <div id="quota-cooldown-banner" class="card pad hidden" style="border-color:#5c2b2b">
+      ⏳ <b>Shared YouTube API-quota cooldown</b> until <span id="quota-cooldown-until"></span>
+      (<span id="quota-cooldown-reason"></span>) — every queue waits for this one;
+      resumes automatically.
+    </div>
     <div id="cooldown-banner" class="card pad hidden" style="border-color:#5c4a2b">
-      ⏳ <b>Upload cooldown</b> until <span id="cooldown-until"></span>
-      (<span id="cooldown-reason"></span>) — uploads resume automatically.
+      ⏳ <b>This queue's channel upload limit</b> — cooldown until <span id="cooldown-until"></span>
+      (<span id="cooldown-reason"></span>) — other queues are unaffected;
+      resumes automatically.
     </div>
     <div class="card">
       <div id="queue-list" class="queue-list"></div>
@@ -136,39 +292,24 @@
         </table>
       </div>
     </div>
-    <p class="muted">Every finished upload, matched by VOD folder name. “After
-      upload” is what the app did with the local files; “On disk now” is checked
-      live each time you open this tab or press Re-check.</p>
+    <p class="muted">Every finished upload of this queue, matched by VOD folder
+      name. "After upload" is what the app did with the local files; "On disk
+      now" is checked live each time you open this tab or press Re-check.</p>
   </section>
 
   <!-- ======================================================== AUTOMATION -->
   <section id="view-automation" class="view hidden">
-    <header class="view-head"><h1>Automation</h1></header>
+    <header class="view-head"><h1>Automation <span id="auto-queue-name" class="muted"></span></h1></header>
     <div class="card pad">
-      <label class="switch-row">
-        <input type="checkbox" id="auto-scan" onchange="saveAutomation()">
-        <span>Watch the VOD folder and rescan automatically</span>
-      </label>
       <div class="field-row">
-        <span>Scan every</span>
-        <input id="auto-interval" class="input xs" type="number" min="1" max="1440"
-               onchange="saveAutomation()">
-        <span>minutes</span>
         <span id="auto-status" class="chip chip-muted"></span>
-        <button class="btn sm" onclick="api('/api/automation/run')">Run a scan cycle now</button>
+        <button class="btn sm" onclick="qapi('/automation/run')">Run a scan cycle now</button>
+        <span class="sep"></span>
+        <button class="btn" onclick="openQueueEditor(activeQueueId)">⚙️ Edit this queue's automation settings</button>
       </div>
-      <label class="switch-row">
-        <input type="checkbox" id="auto-queue" onchange="saveAutomation()">
-        <span>Automatically queue new ready VODs (generated metadata + default playlist rule)</span>
-      </label>
-      <label class="switch-row">
-        <input type="checkbox" id="auto-start" onchange="saveAutomation()">
-        <span>Automatically start uploading when the queue has items</span>
-      </label>
-      <label class="switch-row">
-        <input type="checkbox" id="auto-finalized" onchange="saveAutomation()">
-        <span>Skip raw .ts / not-finalized captures (they may still be recording)</span>
-      </label>
+      <p class="muted">Whether this queue watches its folder, auto-queues new
+        VODs and auto-starts uploads is configured per queue — edit it from
+        here or from the Queues tab.</p>
     </div>
   </section>
 
@@ -177,7 +318,9 @@
     <header class="view-head">
       <h1>Playlists</h1>
       <div class="toolbar">
-        <button class="btn" onclick="api('/api/playlists/refresh')">⟳ Refresh</button>
+        <span>Channel</span>
+        <select id="browse-account-playlists" class="input" onchange="setBrowseAccount(this.value)"></select>
+        <button class="btn" onclick="loadPlaylists()">⟳ Refresh</button>
         <input id="new-pl-title" class="input" placeholder="New playlist name">
         <select id="new-pl-privacy" class="input sm">
           <option>unlisted</option><option>private</option><option>public</option>
@@ -193,21 +336,9 @@
         </table>
       </div>
     </div>
-    <div class="card pad">
-      <h2>Default playlist for uploads</h2>
-      <label class="switch-row"><input type="radio" name="plmode" value="none"
-        onchange="savePlaylistRule()"><span>Don't add uploads to any playlist</span></label>
-      <label class="switch-row"><input type="radio" name="plmode" value="fixed"
-        onchange="savePlaylistRule()"><span>Always add to:</span>
-        <select id="pl-fixed" class="input" onchange="savePlaylistRule()"></select></label>
-      <label class="switch-row"><input type="radio" name="plmode" value="template"
-        onchange="savePlaylistRule()"><span>Auto-create by name:</span>
-        <input id="pl-template" class="input grow" onchange="savePlaylistRule()"
-               placeholder="{streamer} VODs {year}"></label>
-      <p class="muted">Placeholders: {streamer} {login} {game} {games} {year} {month}
-        {date} {title}. Missing playlists are created on demand (50 quota units;
-        adding a video costs another 50).</p>
-    </div>
+    <p class="muted">This list belongs to the channel selected above, not to any
+      one queue — a queue's own "always add uploads to a playlist" rule is set
+      in its queue editor (Queues tab).</p>
   </section>
 
   <!-- ========================================================== MY YOUTUBE -->
@@ -215,6 +346,8 @@
     <header class="view-head">
       <h1>My YouTube</h1>
       <div class="toolbar">
+        <span>Channel</span>
+        <select id="browse-account-myyt" class="input" onchange="setBrowseAccount(this.value)"></select>
         <span id="yt-count" class="chip chip-muted"></span>
         <button class="btn btn-accent" onclick="loadYt()">⟳ Load videos</button>
       </div>
@@ -294,7 +427,7 @@
   <section id="view-settings" class="view hidden">
     <header class="view-head"><h1>Settings</h1></header>
     <div class="card pad">
-      <h2>YouTube account</h2>
+      <h2>YouTube accounts</h2>
       <div id="auth-box">
         <div class="field-row">
           <input id="client-id" class="input grow" placeholder="OAuth client ID" spellcheck="false">
@@ -312,12 +445,9 @@
           ⚠ A “Desktop app” client (used by the desktop version) will be rejected
           with <code>invalid_client</code>.</p>
         <div class="field-row">
-          <span>Active channel</span>
-          <select id="account-select" class="input" onchange="switchAccount()"></select>
-          <button class="btn btn-accent" onclick="connectYouTube()">➕ Connect (code)…</button>
+          <button class="btn btn-accent" onclick="connectYouTube()">➕ Connect another channel (code)…</button>
           <button id="browser-signin" class="btn hidden"
                   onclick="api('/api/auth/browser')">🌐 Sign in with browser…</button>
-          <button class="btn btn-ghost" onclick="api('/api/auth/signout')">Remove account</button>
           <span id="auth-status" class="chip chip-muted"></span>
         </div>
         <div id="device-code-box" class="device-code hidden">
@@ -325,91 +455,39 @@
           target="_blank" rel="noopener">google.com/device</a>:
           <div id="device-code" class="code"></div>
         </div>
+        <div class="table-wrap" style="margin-top:12px">
+          <table id="accounts-table">
+            <thead><tr><th>Channel</th><th>Used by</th><th></th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
       </div>
     </div>
-    <div id="desktop-settings" class="card pad hidden">
-      <h2>Desktop interface</h2>
-      <div class="field-row">
-        <span>Interface</span>
+    <div class="card pad">
+      <h2>Interface</h2>
+      <div class="field-row" id="desktop-settings">
+        <span>Desktop interface</span>
         <select id="set-ui-mode" class="input" onchange="saveUiMode()">
           <option value="studio">Studio (this modern interface)</option>
           <option value="classic">Classic (Tkinter window)</option>
         </select>
         <span class="muted">takes effect after restarting the app</span>
       </div>
-    </div>
-    <div class="card pad">
-      <h2>Upload defaults</h2>
       <div class="field-row">
-        <span>Privacy</span>
-        <select id="set-privacy" class="input sm" onchange="saveSettings()">
-          <option>private</option><option>unlisted</option><option>public</option>
-        </select>
-        <span>Category</span>
-        <select id="set-category" class="input" onchange="saveSettings()">
-          <option value="20">Gaming</option><option value="24">Entertainment</option>
-          <option value="22">People &amp; Blogs</option>
-          <option value="28">Science &amp; Technology</option>
+        <span>Multiple queues layout</span>
+        <select id="set-queue-layout" class="input" onchange="saveQueueLayout()">
+          <option value="switcher">Dropdown switcher</option>
+          <option value="tabs">One tab per queue</option>
         </select>
       </div>
-      <div class="field-row">
-        <span>Title template</span>
-        <input id="set-template" class="input grow" onchange="saveSettings()">
-      </div>
-      <p class="muted">Placeholders: {title} {streamer} {login} {date} {game} {games}</p>
-      <label>Description template (empty = built-in default)</label>
-      <textarea id="set-desc-template" class="input" rows="6" spellcheck="false"
-                style="width:100%" onchange="saveSettings()"></textarea>
-      <p class="muted">Placeholders: {title} {streamer} {login} {date} {duration} {game}
-        {games} {chapters} {vod_id}. Lines whose placeholders are all empty are dropped.</p>
-      <label class="switch-row"><input type="checkbox" id="set-notify"
-        onchange="saveSettings()"><span>Notify subscribers on upload</span></label>
-      <label class="switch-row"><input type="checkbox" id="set-kids"
-        onchange="saveSettings()"><span>Mark as “made for kids”</span></label>
-      <div class="field-row">
-        <span>Max uploads per 24h</span>
-        <input id="set-daily" class="input xs" type="number" min="0" max="500"
-               onchange="saveSettings()">
-        <span class="muted">0 = no limit; stops before YouTube's own limit errors.
-          Used <span id="uploads-24h">0</span> in the last 24h.</span>
-      </div>
-      <div class="field-row">
-        <span>Upload speed limit (MB/s)</span>
-        <input id="set-speed" class="input xs" type="number" min="0" step="0.5"
-               onchange="saveSettings()">
-        <span>Retry wait after upload limit (hours)</span>
-        <input id="set-cooldown-h" class="input xs" type="number" min="0.5" step="0.5"
-               onchange="saveSettings()">
-      </div>
-      <label class="switch-row"><input type="checkbox" id="set-verify"
-        onchange="saveSettings()"><span>Verify each upload on YouTube after it finishes</span></label>
-      <div class="field-row">
-        <span>Extra tags (always added)</span>
-        <input id="set-extra-tags" class="input grow" onchange="saveSettings()">
-      </div>
-      <div class="field-row">
-        <span>After verified upload</span>
-        <select id="set-after" class="input" onchange="saveSettings()">
-          <option value="keep">Keep local files</option>
-          <option value="trash_video">Delete the video file (permanent!)</option>
-          <option value="trash_folder">Delete the whole VOD folder (permanent!)</option>
-        </select>
-      </div>
-      <p class="muted">Server mode has no recycle bin — deletion is permanent and only
-        ever happens after YouTube confirms the video exists.</p>
     </div>
     <div class="card pad">
       <h2>LiveStreamDVR</h2>
-      <label class="switch-row"><input type="checkbox" id="set-lsdvr-delete"
-        onchange="saveSettings()"><span>Delete through the LiveStreamDVR API instead
-        of deleting files directly</span></label>
-      <p class="muted">LiveStreamDVR watches its VOD folders, and deleting them behind
-        its back can crash it — it then stays off until someone restarts it. With
-        this on, the after-upload cleanup and <b>Delete local</b> ask LiveStreamDVR to
-        delete the VOD, so it stops watching it first. “Delete the video file” keeps
-        the VOD entry in LiveStreamDVR; “Delete the whole VOD folder” removes the VOD
-        from it. If LiveStreamDVR can't be reached, nothing is deleted and History
-        shows why.</p>
+      <p class="muted">One LiveStreamDVR connection, shared by every queue that
+        enables "Delete through the LiveStreamDVR API" in its own queue editor.
+        LiveStreamDVR watches its VOD folders, and deleting them behind its
+        back can crash it — with this enabled instead, the app asks
+        LiveStreamDVR to delete the VOD so it stops watching it first.</p>
       <div class="field-row">
         <span>Address</span>
         <input id="set-lsdvr-url" class="input grow" spellcheck="false"

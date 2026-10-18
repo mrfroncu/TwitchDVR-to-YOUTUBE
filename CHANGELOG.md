@@ -4,6 +4,34 @@ Release versions come from the `VERSION` file; each release's notes are the
 matching section of this file. Bump `VERSION` and add a section here to cut
 a new release.
 
+## 2.7.0 — 2026-10-18
+
+### 🗂️ Multiple independent upload queues
+- Run several upload pipelines side by side — each its own VOD folder and
+  YouTube channel, its own title/description templates, privacy, playlist
+  rule, rate limits and automation settings. New **Queues** tab to add,
+  edit, enable/disable, reorder and remove them (desktop and web/Docker).
+- Only one queue uploads at a time; when the active one finishes, hits its
+  channel's own upload-limit cooldown, or errors, the next ready queue
+  takes over automatically — a channel limit on one queue no longer blocks
+  uploads on a different channel/folder.
+- YouTube's two separate limits are now tracked correctly: a channel's own
+  rolling ~24h upload limit pauses only that queue, while the shared API
+  quota (10 000 units/day, same Google Cloud project for every queue) pauses
+  **every** queue at once, shown as a dedicated cooldown banner/status.
+- New **Settings → Queue layout** choice between a dropdown switcher
+  (Videos/Queue/Automation act on whichever queue is selected) and one tab
+  per queue — same choice on both desktop and web/Docker.
+- Playlists and the My YouTube manager are now scoped to whichever channel
+  you pick there, independent of any one queue, instead of a single global
+  "active channel".
+- Existing single-folder setups migrate automatically into one queue
+  ("Queue 1") on first launch after updating — no action needed.
+- Internally, the scan/queue/upload/cooldown model that used to be
+  duplicated between the desktop app and the web/Docker app now lives in
+  one shared module (`app/queue_runtime.py`), so the two stay in sync going
+  forward.
+
 ## 2.6.10 — 2026-10-18
 
 ### 🧹 Desktop: optionally delete VODs through LiveStreamDVR
