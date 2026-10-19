@@ -63,7 +63,7 @@ class QueueRuntime:
         self.scan_state: dict = {"active": False, "done": 0, "total": 0,
                                  "current": "", "found": None, "error": ""}
         self.op_state: dict = {"active": False, "label": "", "done": 0,
-                               "total": 0, "result": ""}
+                               "total": 0, "result": "", "ok_count": 0}
         self.lock = threading.RLock()
         self._state: dict = config.load_queue_state(self.id)
         self._queue_restored = False
@@ -593,12 +593,15 @@ class QueueRuntime:
         what = "folder" if mode == "trash_folder" else "video file"
         vod = self.vods.get(key)
         if vod is None:
+            self.log(f"{key}: no longer in the scanned list — {what} not "
+                     "deleted by this app.")
             self._record_local(key, "missing",
                                f"VOD no longer in the scanned list — {what} "
                                "not deleted by this app")
             return False
         target = vod.folder if mode == "trash_folder" else vod.video_path
         if target is None or not target.exists():
+            self.log(f"{key}: {what} was already gone before deletion.")
             self._record_local(key, "missing",
                                f"{what} was already gone before deletion",
                                str(target or ""))
@@ -648,6 +651,8 @@ class QueueRuntime:
         what = "folder" if mode == "trash_folder" else "video file"
         vod = self.vods.get(key)
         if vod is None:
+            self.log(f"{key}: no longer in the scanned list — {what} not "
+                     "deleted by this app.")
             self._record_local(key, "missing",
                                f"VOD no longer in the scanned list — {what} "
                                "not deleted by this app")
@@ -655,6 +660,7 @@ class QueueRuntime:
         video = vod.video_path
         if not vod.json_path.exists() or (mode != "trash_folder" and (
                 video is None or not video.exists())):
+            self.log(f"{key}: {what} was already gone before deletion.")
             self._record_local(key, "missing",
                                f"{what} was already gone before deletion",
                                str(video or vod.folder))
@@ -662,6 +668,8 @@ class QueueRuntime:
         try:
             info = lsdvr.read_vod_info(vod.json_path)
         except (OSError, ValueError) as exc:
+            self.log(f"{key}: could not read LiveStreamDVR's VOD file "
+                     f"({vod.json_path.name}): {exc}")
             self._record_local(key, "failed", "could not read LiveStreamDVR's "
                                f"VOD file: {exc}", str(vod.json_path))
             return False
@@ -782,7 +790,7 @@ class QueueRuntime:
             if self.op_state.get("active"):
                 raise RuntimeError("another delete operation is running")
             self.op_state.update(active=True, label="Deleting", done=0,
-                                 total=len(candidates), result="")
+                                 total=len(candidates), result="", ok_count=0)
 
             def worker():
                 done = 0
@@ -791,7 +799,8 @@ class QueueRuntime:
                     if self._dispose_vod(key, "trash_folder"):
                         done += 1
                 self.op_state.update(
-                    active=False, result=f"Deleted {done} of {len(candidates)} folder(s)")
+                    active=False, ok_count=done,
+                    result=f"Deleted {done} of {len(candidates)} folder(s)")
                 self.log(f"deleted {done} of {len(candidates)} VOD folder(s).")
                 try:
                     self.scan()
@@ -811,7 +820,7 @@ class QueueRuntime:
             if self.op_state.get("active"):
                 raise RuntimeError("another delete operation is running")
             self.op_state.update(active=True, label="Deleting", done=0,
-                                 total=len(candidates), result="")
+                                 total=len(candidates), result="", ok_count=0)
 
             def worker():
                 done = 0
@@ -820,7 +829,8 @@ class QueueRuntime:
                     if self._dispose_vod(key, "trash_folder"):
                         done += 1
                 self.op_state.update(
-                    active=False, result=f"Deleted {done} of {len(candidates)} folder(s)")
+                    active=False, ok_count=done,
+                    result=f"Deleted {done} of {len(candidates)} folder(s)")
                 self.log(f"deleted {done} of {len(candidates)} VOD folder(s) "
                          "(any status).")
                 try:

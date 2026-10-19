@@ -4,6 +4,23 @@ Release versions come from the `VERSION` file; each release's notes are the
 matching section of this file. Bump `VERSION` and add a section here to cut
 a new release.
 
+## 2.7.3 — 2026-10-19
+
+### 🐛 Local deletion could fail silently, with no sign anything was wrong
+- Several failure paths (VOD dropped from the scanned list, the file
+  already gone, LiveStreamDVR's VOD JSON unreadable) only recorded the
+  reason in the upload registry's `local` field — shown on the web/Docker
+  History tab, which the desktop app doesn't have. On desktop those
+  failures left no trace anywhere: the log stayed empty and the only
+  symptom was "Deleted 0 of N folder(s)" that never explained why. All of
+  these now also write a line to the log.
+- "Deleted 0 of N folder(s)" was always shown with a green ✅, making a
+  complete failure look like success at a glance. It now shows ❌ when
+  nothing was actually deleted, and desktop pops up a warning dialog
+  pointing at the log; the web/Docker UI shows the same chip in red and a
+  toast. (Lost in the 2.7.0 queues refactor — the old single-queue desktop
+  app used to warn on this too.)
+
 ## 2.7.2 — 2026-10-19
 
 ### 🐛 Desktop: queue tabs landed in the wrong place, editing a queue could yank you to another tab

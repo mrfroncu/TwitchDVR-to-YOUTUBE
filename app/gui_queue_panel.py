@@ -35,6 +35,7 @@ class QueuePanel:
         self._editing_key: str | None = None
         self._video_search_after_id: str | None = None
         self._recycling = False
+        self._op_was_active = False
         self._prog_anim = {"active": False, "pct": 0.0, "pct_per_s": 0.0,
                            "ts": 0.0, "shown": 0.0}
 
@@ -82,6 +83,9 @@ class QueuePanel:
         self._editing_key = None
         self.video_checked = set()
         self.queue_checked = set()
+        # avoid popping a "failed" warning for a different queue's leftover
+        # result right after switching to it
+        self._op_was_active = False
         self._full_refresh()
 
     def _full_refresh(self) -> None:
@@ -359,11 +363,22 @@ class QueuePanel:
 
     def _refresh_op_label(self) -> None:
         op = self.runtime.op_state
-        if op.get("active"):
+        active = bool(op.get("active"))
+        if active:
             self.op_status_label.configure(
                 text=f"🗑 {op.get('label', 'Working')}… {op.get('done', 0)}/{op.get('total', 0)}")
         elif op.get("result"):
-            self.op_status_label.configure(text="✅ " + op["result"])
+            total = op.get("total", 0)
+            ok = op.get("ok_count", total)
+            failed = bool(total) and ok == 0
+            self.op_status_label.configure(
+                text=("❌ " if failed else "✅ ") + op["result"])
+            if failed and self._op_was_active:
+                messagebox.showwarning(
+                    f"{op.get('label', 'Operation')} failed",
+                    f"{op['result']} — nothing was removed. See the Log "
+                    "below for the reason(s).")
+        self._op_was_active = active
 
     def _generate_meta(self, vod: Vod) -> dict:
         return self.runtime._generate_meta(vod)

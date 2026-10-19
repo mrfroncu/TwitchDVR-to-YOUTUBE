@@ -528,6 +528,7 @@ async function bulk(action, value = "", confirmFirst = false) {
         : "Apply to"} ${checked.size} checked video(s)?`)) return;
   await qapi("/bulk", { action, keys: [...checked], value });
 }
+const _opWasActive = {};
 function renderOps() {
   const chip = el("op-status");
   const q = activeQueue();
@@ -537,12 +538,18 @@ function renderOps() {
     chip.className = "chip chip-muted";
     chip.classList.remove("hidden");
   } else if (op.result) {
-    chip.textContent = "✅ " + op.result;
-    chip.className = "chip";
+    const ok = op.ok_count ?? op.total ?? 0;
+    const failed = (op.total || 0) > 0 && ok === 0;
+    chip.textContent = (failed ? "❌ " : "✅ ") + op.result;
+    chip.className = failed ? "chip chip-err" : "chip";
     chip.classList.remove("hidden");
+    if (q && failed && _opWasActive[q.id]) {
+      toast(`${op.result} — nothing was removed. Check the Log for why.`);
+    }
   } else {
     chip.classList.add("hidden");
   }
+  if (q) _opWasActive[q.id] = !!op.active;
 }
 
 /* ------------------------------------------------------------ editor */
