@@ -316,6 +316,11 @@ class App:
         elif current is getattr(self, "playlists_tab_frame", None) \
                 and not self._playlists_loaded_once:
             self.refresh_playlists(quiet=True)
+        if self._switcher_panel is not None:
+            is_queue_scoped = current in self._queue_scoped_frames()
+            self._show_queue_bar(is_queue_scoped)
+            if is_queue_scoped:
+                self._update_queue_bar_status()
         if self.cfg.get("ui_style", "modern") == "classic":
             return
         try:
@@ -448,7 +453,14 @@ class App:
     def _refresh_queues_tree(self) -> None:
         selected = self.queues_tree.selection()
         self.queues_tree.delete(*self.queues_tree.get_children())
-        for rt in self.manager.list_queues():
+        queues = self.manager.list_queues()
+        if not queues:
+            self.queues_tree.insert(
+                "", "end", iid="__empty__", values=(
+                    "No queues yet — click “➕ Add queue” above to create one.",
+                    "", "", "", "", ""))
+            return
+        for rt in queues:
             pending = sum(1 for i in rt.queue_items if i.status == "queued")
             if rt.worker and rt.worker.is_alive():
                 status = "uploading"
@@ -501,7 +513,7 @@ class App:
 
     def _move_selected_queue(self, delta: int) -> None:
         sel = self.queues_tree.selection()
-        if not sel:
+        if not sel or sel[0] not in self.manager.runtimes:
             return
         order = [rt.id for rt in self.manager.list_queues()]
         idx = order.index(sel[0])
@@ -735,7 +747,7 @@ class App:
                 preferred = rt.id
             dlg.destroy()
             self._qdef_dialog = None
-            self._layout_queues(preferred_id=preferred)
+            self._layout_queues(preferred_id=preferred, focus_new=(rt is None))
             self._refresh_queues_tree()
 
         def do_cancel():
@@ -766,8 +778,12 @@ class App:
 
     # ------------------------------------------------------- queue bar/layout --
     def _build_queue_bar(self) -> None:
+        """A one-line strip above the notebook, used only in "switcher"
+        layout: picks which queue the Videos/Queue & Progress/Automation
+        tabs act on. Hidden on every other tab and entirely in "tabs"
+        layout (where the per-queue tabs themselves are the picker) —
+        see _on_tab_changed."""
         self.queue_bar = ttk.Frame(self.root)
-        self.queue_bar.pack(fill="x", padx=8, pady=(6, 0), before=self.notebook)
         self.queue_select_label = ttk.Label(self.queue_bar, text="Queue:")
         self.queue_select_var = tk.StringVar()
         self.queue_select_combo = ttk.Combobox(
@@ -775,11 +791,48 @@ class App:
             state="readonly", width=28)
         self.queue_select_combo.bind("<<ComboboxSelected>>", self._on_queue_select_changed)
         self.queue_bar_status = ttk.Label(self.queue_bar, text="", style="Muted.TLabel")
-        self._no_queues_label = ttk.Label(
-            self.queue_bar, text="No queues yet — add one on the Queues tab →",
-            style="Muted.TLabel")
+        self.queue_select_label.pack(side="left", padx=(4, 4))
+        self.queue_select_combo.pack(side="left")
+        self.queue_bar_status.pack(side="left", padx=10)
+        self._queue_bar_shown = False
 
-    def _layout_queues(self, preferred_id: str | None = None) -> None:
+    def _show_queue_bar(self, show: bool) -> None:
+        if show == self._queue_bar_shown:
+            return
+        self._queue_bar_shown = show
+        if show:
+            self.queue_bar.pack(fill="x", padx=8, pady=(6, 0), before=self.notebook)
+        else:
+            self.queue_bar.pack_forget()
+
+    def _queue_scoped_frames(self) -> set:
+        """Notebook tabs whose content belongs to one queue — used to (a)
+        decide whether the queue-picker bar should be visible and (b)
+        decide whether the currently selected tab needs to be preserved or
+        is about to be torn down by _layout_queues."""
+        if self._switcher_panel is not None:
+            return {self._switcher_panel.videos_tab_frame,
+                    self._switcher_panel.queue_tab_frame,
+                    self._switcher_panel.automation_tab_frame}
+        return set(self._queue_containers.values())
+
+    def _layout_queues(self, preferred_id: str | None = None,
+                       focus_new: bool = False) -> None:
+        """(Re)builds the per-queue tabs. Always inserted right after the
+        fixed "Queues" tab (index 0) — never appended — so they stay in a
+        stable, sensible position no matter how many times this reruns
+        (editing/reordering/removing a queue, or toggling the layout all
+        call this again). Preserves whatever fixed tab (Queues / Playlists
+        / My YouTube / Settings / About) was selected, unless `focus_new`
+        asks to jump straight to the queue that was just created."""
+        restore_frame = None
+        try:
+            current = self.notebook.nametowidget(self.notebook.select())
+            if current not in self._queue_scoped_frames():
+                restore_frame = current
+        except tk.TclError:
+            pass
+
         for panel in list(self.panels.values()):
             panel.destroy()
         self.panels.clear()
@@ -793,32 +846,34 @@ class App:
         self._switcher_panel = None
         self._active_queue_id = None
 
-        self.queue_select_label.pack_forget()
-        self.queue_select_combo.pack_forget()
-        self.queue_bar_status.pack_forget()
-        self._no_queues_label.pack_forget()
-
         queues = self.manager.list_queues()
         if not queues:
-            self._no_queues_label.pack(side="left", padx=4, pady=4)
+            self._show_queue_bar(False)
+            if restore_frame is not None:
+                self.notebook.select(restore_frame)
             return
 
         layout = self.cfg.get("queue_ui_layout", "switcher")
         if layout == "tabs":
-            for rt in queues:
+            self._show_queue_bar(False)
+            for i, rt in enumerate(queues):
                 container = ttk.Frame(self.notebook)
-                self.notebook.add(container, text=f" {rt.name} ")
+                self.notebook.insert(1 + i, container, text=f" {rt.name} ")
                 self._queue_containers[rt.id] = container
                 panel = QueuePanel(self, rt)
                 panel.build(container, as_subtabs=True)
                 self.panels[rt.id] = panel
             preferred = preferred_id if preferred_id in self._queue_containers else queues[0].id
             self._active_queue_id = preferred
-            self.notebook.select(self._queue_containers[preferred])
+            if focus_new:
+                self.notebook.select(self._queue_containers[preferred])
+            elif restore_frame is not None:
+                self.notebook.select(restore_frame)
+            else:
+                # was on a queue-scoped tab that just got rebuilt from
+                # under it — land on the admin tab as a safe default.
+                self.notebook.select(self.queues_tab_frame)
         else:
-            self.queue_select_label.pack(side="left", padx=(4, 4))
-            self.queue_select_combo.pack(side="left")
-            self.queue_bar_status.pack(side="left", padx=10)
             self.queue_select_combo.configure(values=[rt.name for rt in queues])
             self._queue_select_ids = [rt.id for rt in queues]
             by_id = {rt.id: rt for rt in queues}
@@ -826,14 +881,39 @@ class App:
             self._active_queue_id = first.id
             self.queue_select_combo.current(self._queue_select_ids.index(first.id))
             panel = QueuePanel(self, first)
-            panel.build(self.notebook, as_subtabs=False)
+            panel.build(self.notebook, as_subtabs=False, insert_at=1)
             self.panels[first.id] = panel
             self._switcher_panel = panel
+            if focus_new:
+                self.notebook.select(panel.videos_tab_frame)
+                self._show_queue_bar(True)
+            elif restore_frame is not None:
+                self.notebook.select(restore_frame)
+                self._show_queue_bar(False)
+            else:
+                self.notebook.select(self.queues_tab_frame)
+                self._show_queue_bar(False)
         self._apply_theme_to_panels()
+        self._update_queue_bar_status()
 
     def _apply_theme_to_panels(self) -> None:
         for panel in self.panels.values():
             panel.apply_theme(self.colors)
+
+    def _update_queue_bar_status(self) -> None:
+        rt = self.manager.runtimes.get(self._active_queue_id)
+        if rt is None:
+            self.queue_bar_status.configure(text="")
+            return
+        if rt.worker and rt.worker.is_alive():
+            status = "uploading"
+        elif not rt.enabled:
+            status = "disabled"
+        else:
+            cd = limits.get_cooldown(rt._state)
+            status = f"cooldown until {limits.fmt_local(cd)}" if cd is not None \
+                else ("not signed in" if rt.credentials is None else "idle")
+        self.queue_bar_status.configure(text=status)
 
     def _on_queue_select_changed(self, _event=None) -> None:
         idx = self.queue_select_combo.current()
@@ -848,6 +928,7 @@ class App:
         self._switcher_panel.apply_theme(self.colors)
         self.panels[qid] = self._switcher_panel
         self._active_queue_id = qid
+        self._update_queue_bar_status()
 
     # ----------------------------------------------------------- manager tab --
     def _build_manager_tab(self) -> None:
@@ -1434,6 +1515,7 @@ class App:
     def _build_settings_tab(self) -> None:
         outer = ttk.Frame(self.notebook)
         self.notebook.add(outer, text=" ⚙ Settings ")
+        self.settings_tab_frame = outer
 
         container = ttk.Frame(outer)
         container.pack(fill="both", expand=True)
@@ -1793,6 +1875,7 @@ class App:
     def _build_about_tab(self) -> None:
         outer = ttk.Frame(self.notebook)
         self.notebook.add(outer, text=" ℹ About ")
+        self.about_tab_frame = outer
         tab = self._make_scrollable(outer)
 
         box = ttk.Frame(tab)
@@ -1934,6 +2017,8 @@ class App:
             text=f"{len(queues)} queue(s) · {pending} pending, {done} done")
         if hasattr(self, "queues_tree"):
             self._refresh_queues_tree()
+        if self._queue_bar_shown:
+            self._update_queue_bar_status()
         self.root.after(1000, self._refresh_status_bar)
 
     # ---------------------------------------------------------------- events --

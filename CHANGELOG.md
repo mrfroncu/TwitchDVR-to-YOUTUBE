@@ -4,6 +4,25 @@ Release versions come from the `VERSION` file; each release's notes are the
 matching section of this file. Bump `VERSION` and add a section here to cut
 a new release.
 
+## 2.7.2 — 2026-10-19
+
+### 🐛 Desktop: queue tabs landed in the wrong place, editing a queue could yank you to another tab
+- The per-queue tabs (Videos / Queue & Progress / Automation, or one tab
+  per queue in "tabs" layout) were appended *after* Playlists / My YouTube
+  / Settings / About instead of right after "Queues" — every rebuild made
+  the tab order look more shuffled.
+- Editing, reordering, enabling/disabling or removing a queue — or just
+  switching Settings → Queue layout between the dropdown and tabs — tore
+  down and rebuilt the queue tabs, which also silently jumped you to a
+  different tab even if you were on Settings or About at the time.
+- Queue tabs now always insert at a fixed position right after "Queues",
+  and rebuilding them preserves whatever non-queue tab you were on;
+  adding a brand-new queue still jumps you to its Videos tab on purpose.
+- The "Queue:" picker bar (switcher layout) no longer floats above every
+  tab — it only shows while you're actually on Videos / Queue & Progress
+  / Automation, and stays fully hidden in "tabs" layout, where the tabs
+  themselves are the picker.
+
 ## 2.7.1 — 2026-10-18
 
 ### 🐛 LiveStreamDVR deletion: stop getting stuck on orphaned VODs

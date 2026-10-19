@@ -31,6 +31,7 @@ class QueuePanel:
         self.app = app
         self.runtime = runtime
         self._nb: ttk.Notebook | None = None
+        self._insert_at: int | None = None
         self._editing_key: str | None = None
         self._video_search_after_id: str | None = None
         self._recycling = False
@@ -38,18 +39,34 @@ class QueuePanel:
                            "ts": 0.0, "shown": 0.0}
 
     # ------------------------------------------------------------- build --
-    def build(self, parent, as_subtabs: bool) -> None:
+    def build(self, parent, as_subtabs: bool, insert_at: int | None = None) -> None:
+        """`insert_at`, switcher layout only: the fixed position (right
+        after the "Queues" tab) to insert these 3 pages at on `parent`
+        (the app's main notebook, which may already hold other fixed
+        tabs) — inserting rather than appending keeps them from drifting
+        to the end every time the panel is torn down and rebuilt. Ignored
+        for `as_subtabs=True`, where `parent` is this panel's own empty
+        container and plain append order is already correct."""
         if as_subtabs:
             self._nb = ttk.Notebook(parent)
             self._nb.pack(fill="both", expand=True)
             host = self._nb
+            self._insert_at = None
         else:
             host = parent
+            self._insert_at = insert_at
         self._build_videos_tab(host)
         self._build_queue_tab(host)
         self._build_automation_tab(host)
         self._full_refresh()
         self._tick()
+
+    def _add_tab(self, host, tab, text: str) -> None:
+        if self._insert_at is None:
+            host.add(tab, text=text)
+        else:
+            host.insert(self._insert_at, tab, text=text)
+            self._insert_at += 1
 
     def destroy(self) -> None:
         if self._nb is not None:
@@ -105,7 +122,7 @@ class QueuePanel:
     # ------------------------------------------------------------- videos --
     def _build_videos_tab(self, host) -> None:
         tab = ttk.Frame(host)
-        host.add(tab, text=" 🎬 Videos ")
+        self._add_tab(host, tab, " 🎬 Videos ")
         self.videos_tab_frame = tab
 
         top = ttk.Frame(tab)
@@ -801,7 +818,7 @@ class QueuePanel:
     # -------------------------------------------------------------- queue --
     def _build_queue_tab(self, host) -> None:
         tab = ttk.Frame(host)
-        host.add(tab, text=" 📤 Queue & Progress ")
+        self._add_tab(host, tab, " 📤 Queue & Progress ")
         self.queue_tab_frame = tab
 
         header = ttk.Frame(tab)
@@ -1056,7 +1073,7 @@ class QueuePanel:
     # --------------------------------------------------------- automation --
     def _build_automation_tab(self, host) -> None:
         tab = ttk.Frame(host)
-        host.add(tab, text=" 🤖 Automation ")
+        self._add_tab(host, tab, " 🤖 Automation ")
         self.automation_tab_frame = tab
 
         box = ttk.LabelFrame(tab, text="📁 Background folder watching")
