@@ -629,6 +629,7 @@ class QueueRuntime:
             return False
         _clear_readonly(target)
         recycled = False
+        stuck: list[str] = []
         if self.manager.recycle_bin_delete is not None:
             try:
                 recycled = self.manager.recycle_bin_delete(target)
@@ -648,7 +649,16 @@ class QueueRuntime:
                 return False
             try:
                 if target.is_dir():
-                    shutil.rmtree(target)
+                    def _on_rm_error(func, p, exc):
+                        stuck.append(p)
+                        self.log(f"could not remove {p}: {exc}")
+                    try:
+                        shutil.rmtree(target, onexc=_on_rm_error)
+                    except TypeError:
+                        # Python < 3.12 has no onexc, only the older onerror
+                        shutil.rmtree(
+                            target,
+                            onerror=lambda f, p, ei: _on_rm_error(f, p, ei[1]))
                 else:
                     target.unlink()
             except OSError as exc:
@@ -657,10 +667,19 @@ class QueueRuntime:
                                    str(target))
                 return False
         if target.exists():
-            self.log(f"deleted {target}, but it is still on disk.")
-            self._record_local(key, "failed",
-                               f"{what} still exists after deleting it", str(target))
-            return False
+            if mode == "trash_folder" and stuck:
+                # best-effort delete got everything except file(s) it
+                # genuinely couldn't remove (commonly a permission mismatch
+                # on the share itself, not something a retry here fixes) —
+                # treat as done rather than blocking on a single leftover
+                self.log(f"deleted most of {target}; some file(s) inside it "
+                         "could not be removed (see above) — the folder "
+                         "stays with just those leftovers.")
+            else:
+                self.log(f"deleted {target}, but it is still on disk.")
+                self._record_local(key, "failed",
+                                   f"{what} still exists after deleting it", str(target))
+                return False
         self._record_local(key, "deleted", f"{what} deleted", str(target))
         with self.lock:
             entry = self.manager.registry.setdefault(key, {})

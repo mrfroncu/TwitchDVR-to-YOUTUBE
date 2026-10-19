@@ -4,6 +4,22 @@ Release versions come from the `VERSION` file; each release's notes are the
 matching section of this file. Bump `VERSION` and add a section here to cut
 a new release.
 
+## 2.7.6 — 2026-10-19
+
+### 🐛 A single undeletable file no longer blocks deleting the whole folder
+- 2.7.5's read-only-attribute fix didn't help a share where the server
+  itself refuses the delete regardless of the client-side attribute (still
+  WinError 5 "Access is denied" on the same file, e.g. a NAS enforcing
+  file ownership/permissions that the connecting SMB user can't override)
+  — a problem no client-side retry can work around, since it's the
+  server, not Windows, saying no.
+- Deleting a whole VOD folder now removes everything it can and skips
+  files it genuinely can't, instead of aborting the entire operation the
+  moment it hits the first one — so one stubborn leftover (logged clearly)
+  no longer leaves the large video file undeleted too. The folder is
+  still treated as cleaned up; only the file(s) that couldn't be removed
+  stay behind, and the log says which.
+
 ## 2.7.5 — 2026-10-19
 
 ### 🐛 Local delete failing with "Access is denied" on specific files
