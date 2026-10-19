@@ -4,6 +4,21 @@ Release versions come from the `VERSION` file; each release's notes are the
 matching section of this file. Bump `VERSION` and add a section here to cut
 a new release.
 
+## 2.7.5 — 2026-10-19
+
+### 🐛 Local delete failing with "Access is denied" on specific files
+- On some SMB/NAS shares, individual files inside a VOD folder came back
+  from the server marked read-only (seen with LiveStreamDVR's
+  `*-ffmpeg-chapters.txt` sidecar file specifically), which made Windows
+  refuse both the Recycle Bin move and a plain delete with "Access is
+  denied" (WinError 5) — on the whole folder for the Recycle Bin attempt,
+  and on that one file for the permanent-delete fallback — even though
+  every other file in the folder deleted fine.
+- Local deletion now clears the read-only attribute on the target (and
+  everything inside it, for a whole folder) before attempting to recycle
+  or delete it, matching how Windows Explorer itself pushes through a
+  read-only file when you delete a folder containing one.
+
 ## 2.7.4 — 2026-10-19
 
 ### 🆕 Rescue action: force a local delete when LiveStreamDVR itself can't

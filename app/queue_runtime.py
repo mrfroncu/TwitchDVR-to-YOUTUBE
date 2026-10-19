@@ -21,8 +21,10 @@ upload/cooldown logic itself lives only here.
 """
 from __future__ import annotations
 
+import os
 import queue
 import shutil
+import stat
 import threading
 import time
 import uuid
@@ -41,6 +43,25 @@ CREDENTIAL_RETRY_TICKS = 10   # how often an idle queue's sign-in is retried
 class _SafeDict(dict):
     def __missing__(self, key):
         return "{" + key + "}"
+
+
+def _clear_readonly(path: Path) -> None:
+    """Best-effort: drop the read-only attribute on path and everything
+    under it. Some SMB/NAS shares mark individual files read-only in a way
+    that makes both the Recycle Bin and a plain delete fail with Windows'
+    "Access is denied" (WinError 5), even though the rest of the folder
+    deletes fine."""
+    try:
+        if path.is_dir():
+            for root, dirs, files in os.walk(path):
+                for name in dirs + files:
+                    try:
+                        os.chmod(os.path.join(root, name), stat.S_IWRITE)
+                    except OSError:
+                        pass
+        os.chmod(path, stat.S_IWRITE)
+    except OSError:
+        pass
 
 
 class QueueRuntime:
@@ -606,6 +627,7 @@ class QueueRuntime:
                                f"{what} was already gone before deletion",
                                str(target or ""))
             return False
+        _clear_readonly(target)
         recycled = False
         if self.manager.recycle_bin_delete is not None:
             try:
@@ -615,6 +637,9 @@ class QueueRuntime:
         if not recycled:
             if self.manager.recycle_bin_delete is not None \
                     and not self.setting("recycle_fallback_delete"):
+                self.log(f"could not recycle {target} (Recycle Bin "
+                         "unavailable, e.g. a network drive) and the "
+                         "permanent-delete fallback isn't enabled.")
                 self._record_local(key, "failed",
                                    f"could not recycle {what} (Recycle Bin "
                                    "unavailable, e.g. a network drive) and "
