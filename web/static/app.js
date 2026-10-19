@@ -528,10 +528,22 @@ async function bulk(action, value = "", confirmFirst = false) {
         : "Apply to"} ${checked.size} checked video(s)?`)) return;
   await qapi("/bulk", { action, keys: [...checked], value });
 }
+async function forceDeleteLocal() {
+  if (!checked.size) { toast("Nothing checked — tick some rows first."); return; }
+  if (!confirm(
+      `Delete ${checked.size} whole VOD folder(s) directly from disk, skipping ` +
+      "LiveStreamDVR entirely?\n\nOnly do this if LiveStreamDVR itself can't " +
+      "delete them (its server is unreachable or out of disk space, etc.) — " +
+      "if LiveStreamDVR is still actively watching/recording any of these " +
+      "folders, deleting them behind its back can crash it.")) return;
+  await qapi("/bulk", { action: "delete_local_force", keys: [...checked], value: "" });
+}
 const _opWasActive = {};
 function renderOps() {
   const chip = el("op-status");
   const q = activeQueue();
+  el("btn-force-delete").classList.toggle(
+    "hidden", !(q && q.settings && q.settings.lsdvr_delete));
   const op = (q && q.op) || {};
   if (op.active) {
     chip.textContent = `🗑 ${op.label}… ${op.done}/${op.total}`;

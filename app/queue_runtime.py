@@ -840,6 +840,40 @@ class QueueRuntime:
 
             threading.Thread(target=worker, daemon=True).start()
             return {"started": True, "count": len(candidates)}
+        if action == "delete_local_force":
+            # Rescue action: skip LiveStreamDVR entirely and delete the local
+            # files directly, even when this queue has "Delete through the
+            # LiveStreamDVR API" turned on — for when LiveStreamDVR itself
+            # can't do it (unreachable, its own server out of disk space,
+            # ...). The UI confirmation warns this can crash LiveStreamDVR if
+            # it's still actively watching the folder.
+            candidates = [key for key in keys
+                         if not (self.manager.registry.get(key) or {}).get("local_deleted")]
+            if not candidates:
+                raise RuntimeError("nothing to delete — already removed")
+            if self.op_state.get("active"):
+                raise RuntimeError("another delete operation is running")
+            self.op_state.update(active=True, label="Deleting", done=0,
+                                 total=len(candidates), result="", ok_count=0)
+
+            def worker():
+                done = 0
+                for i, key in enumerate(candidates, start=1):
+                    self.op_state.update(done=i)
+                    if self._dispose_vod_local(key, "trash_folder"):
+                        done += 1
+                self.op_state.update(
+                    active=False, ok_count=done,
+                    result=f"Deleted {done} of {len(candidates)} folder(s)")
+                self.log(f"deleted {done} of {len(candidates)} VOD folder(s) "
+                         "(forced local, bypassing LiveStreamDVR).")
+                try:
+                    self.scan()
+                except (FileNotFoundError, RuntimeError):
+                    pass
+
+            threading.Thread(target=worker, daemon=True).start()
+            return {"started": True, "count": len(candidates)}
         raise RuntimeError(f"unknown bulk action: {action}")
 
     def history(self) -> list[dict]:

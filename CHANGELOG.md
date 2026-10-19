@@ -4,6 +4,21 @@ Release versions come from the `VERSION` file; each release's notes are the
 matching section of this file. Bump `VERSION` and add a section here to cut
 a new release.
 
+## 2.7.4 — 2026-10-19
+
+### 🆕 Rescue action: force a local delete when LiveStreamDVR itself can't
+- If a queue has LiveStreamDVR deletion turned on, a new **⚠ Force local
+  delete (skip LiveStreamDVR)** button appears next to the usual delete
+  buttons — for when LiveStreamDVR can't do the deletion itself (its own
+  server unreachable or out of disk space, a stuck VOD, etc.) and you need
+  the local files gone anyway.
+- It skips the LiveStreamDVR API entirely and deletes straight from disk,
+  the same as with LiveStreamDVR deletion turned off. The confirmation
+  dialog spells out the trade-off: if LiveStreamDVR is still actively
+  watching/recording that folder, deleting it behind its back can still
+  crash LiveStreamDVR — this is a manual override for when you've already
+  confirmed that isn't the case.
+
 ## 2.7.3 — 2026-10-19
 
 ### 🐛 Local deletion could fail silently, with no sign anything was wrong

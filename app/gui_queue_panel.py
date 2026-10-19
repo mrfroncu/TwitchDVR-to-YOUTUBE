@@ -264,6 +264,9 @@ class QueuePanel:
                    command=self.bulk_recycle).pack(side="left")
         ttk.Button(row2, text="🗑 Delete local files (any status)",
                    command=self.bulk_delete_local).pack(side="left", padx=(6, 0))
+        if self.runtime.setting("lsdvr_delete"):
+            ttk.Button(row2, text="⚠ Force local delete (skip LiveStreamDVR)",
+                       command=self.bulk_delete_local_force).pack(side="left", padx=(6, 0))
         self.op_status_label = ttk.Label(row2, text="", style="Muted.TLabel")
         self.op_status_label.pack(side="left", padx=10)
 
@@ -729,6 +732,35 @@ class QueuePanel:
             self.runtime.bulk("delete_local_any", candidates)
         except RuntimeError as exc:
             messagebox.showinfo("Delete local files", str(exc))
+
+    def bulk_delete_local_force(self) -> None:
+        """Rescue action for when LiveStreamDVR itself can't do the deletion
+        (unreachable, its own server out of disk space, ...): skips the API
+        and deletes the local files directly, same as with LiveStreamDVR
+        deletion turned off."""
+        keys = self._checked_video_keys()
+        candidates = [k for k in keys
+                     if not (self.app.manager.registry.get(k) or {}).get("local_deleted")]
+        if not candidates:
+            messagebox.showinfo(
+                "Force local delete",
+                "No checked rows have a local folder to delete "
+                "(or it was already removed).")
+            return
+        if not messagebox.askyesno(
+                "Force local delete — bypass LiveStreamDVR",
+                f"Delete {len(candidates)} whole VOD folder(s) directly from disk, "
+                "skipping LiveStreamDVR entirely?\n\n"
+                "⚠ Only do this if LiveStreamDVR itself can't delete them (its "
+                "server is unreachable or out of disk space, etc.) — if "
+                "LiveStreamDVR is still actively watching/recording any of "
+                "these folders, deleting them behind its back can crash it.",
+                icon="warning"):
+            return
+        try:
+            self.runtime.bulk("delete_local_force", candidates)
+        except RuntimeError as exc:
+            messagebox.showinfo("Force local delete", str(exc))
 
     def bulk_reset_state(self) -> None:
         keys = self._checked_video_keys()
